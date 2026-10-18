@@ -411,6 +411,19 @@ app.post('/api/reset-data', (req: Request, res: Response) => {
   res.json({ success: true, data: initialSeedData });
 });
 
+// Clear all demo data (start fresh, keep user settings)
+app.post('/api/clear-data', (req: Request, res: Response) => {
+  const db = readDb();
+  db.transactions = [];
+  db.freelanceJobs = [];
+  db.savings = {
+    emergencyFund: { current: 0, target: 3000, title: 'Emergency Fund', subtitle: 'Target: 1 Month Living Buffer' },
+    goals: [],
+  };
+  writeDb(db);
+  res.json({ success: true, data: db });
+});
+
 // Google Sheets / Apps Script Webhook Push proxy
 app.post('/api/sync/push', async (req: Request, res: Response) => {
   const db = readDb();

@@ -49,6 +49,8 @@ interface AppContextType {
   updateSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
   syncWithGoogleSheets: (url?: string) => Promise<{ success: boolean; message: string }>;
   resetToSampleData: () => Promise<boolean>;
+  clearDemoData: (wipeRemoteSheet?: boolean) => Promise<boolean>;
+  isDemoDataLoaded: boolean;
 }
 
 const getEffectiveEnvSettings = () => {
@@ -690,13 +692,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const isDemoDataLoaded = useMemo(() => {
+    const txs = state.transactions || [];
+    return txs.some(
+      (t) =>
+        t.id === 'tx-1' ||
+        t.id === 'tx-2' ||
+        t.title === 'Metro Recharge' ||
+        t.title === 'Bus Pass (Appa)'
+    );
+  }, [state.transactions]);
+
   const syncWithGoogleSheets = async (url?: string) => {
     const envDefaults = getEffectiveEnvSettings();
-    const targetUrl = (url || state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    let targetUrl = (url || state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    
+    // Clean surrounding quotes or whitespace
+    targetUrl = targetUrl.replace(/^["']|["']$/g, '').trim();
+
     if (!targetUrl) {
       return { 
         success: false, 
         message: 'Google Apps Script Web App URL is missing. Tap "Connect" to paste your Web App URL.' 
+      };
+    }
+
+    if (targetUrl.includes('docs.google.com/spreadsheets')) {
+      return {
+        success: false,
+        message: 'This is a Google Sheet link, not a Web App URL! In your Sheet, click Extensions > Apps Script > Deploy > New deployment > Web app. Set "Who has access" to "Anyone", then copy the Web app URL ending in /exec.'
+      };
+    }
+
+    if (targetUrl.endsWith('/edit') || targetUrl.includes('/edit#')) {
+      return {
+        success: false,
+        message: 'This is the Apps Script editor URL (/edit). Please click Deploy > New deployment > Web app, and copy the Web App URL that ends in /exec.'
       };
     }
 
@@ -793,6 +824,60 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return true;
   };
 
+  const clearDemoData = async (wipeRemoteSheet: boolean = true) => {
+    const envDefaults = getEffectiveEnvSettings();
+    const currentScriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+
+    const emptyState: AppState = {
+      transactions: [],
+      freelanceJobs: [],
+      savings: {
+        emergencyFund: {
+          current: 0,
+          target: 3000,
+          title: 'Emergency Fund',
+          subtitle: 'Target: 1 Month Living Buffer',
+        },
+        goals: [],
+      },
+      settings: {
+        ...state.settings,
+        googleAppsScriptUrl: currentScriptUrl,
+        lastSyncedAt: null,
+      },
+    };
+
+    setState(emptyState);
+
+    try {
+      localStorage.setItem('my_money_app_state', JSON.stringify(emptyState));
+    } catch {}
+
+    // Clear backend if running in fullstack
+    try {
+      await fetch('/api/clear-data', { method: 'POST' });
+    } catch {}
+
+    // Auto-wipe Google Sheet data rows if connected
+    if (wipeRemoteSheet && currentScriptUrl) {
+      try {
+        await fetch(currentScriptUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'clear_data',
+            timestamp: new Date().toISOString(),
+          }),
+        });
+      } catch (err) {
+        console.warn('Google Sheet remote wipe notice:', err);
+      }
+    }
+
+    return true;
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -815,6 +900,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateSettings,
         syncWithGoogleSheets,
         resetToSampleData,
+        clearDemoData,
+        isDemoDataLoaded,
       }}
     >
       {children}

@@ -11,10 +11,12 @@ export const SyncModal: React.FC<SyncModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { state, syncWithGoogleSheets, updateSettings } = useApp();
+  const { state, syncWithGoogleSheets, updateSettings, clearDemoData, isDemoDataLoaded } = useApp();
   const [urlInput, setUrlInput] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; success: boolean } | null>(null);
   const [showGuide, setShowGuide] = useState(false);
 
@@ -29,15 +31,51 @@ export const SyncModal: React.FC<SyncModalProps> = ({
 
   const isConfigured = Boolean(state.settings.googleAppsScriptUrl && state.settings.googleAppsScriptUrl.trim().length > 10);
 
+  const validateUrl = (url: string) => {
+    const trimmed = url.trim();
+    if (trimmed.includes('docs.google.com/spreadsheets')) {
+      return '⚠️ That is a Google Spreadsheet link! You need the Apps Script Web App URL: In your Google Sheet, click Extensions → Apps Script → Deploy → New deployment → Web app. Set "Who has access" to "Anyone", and copy the URL ending in /exec.';
+    }
+    if (trimmed.endsWith('/edit') || trimmed.includes('/edit#')) {
+      return '⚠️ That URL ends with /edit (the code editor). Please click Deploy → New deployment → Web app, and copy the Web App URL ending in /exec.';
+    }
+    if (trimmed && !trimmed.startsWith('https://script.google.com/')) {
+      return '⚠️ Google Apps Script URLs start with https://script.google.com/macros/s/.../exec';
+    }
+    return null;
+  };
+
+  const urlWarning = validateUrl(urlInput);
+
   const handleSaveUrl = async () => {
-    const cleanUrl = urlInput.trim();
+    const cleanUrl = urlInput.trim().replace(/^["']|["']$/g, '');
     if (!cleanUrl) {
       setFeedback({ text: 'Please enter a valid Google Apps Script URL', success: false });
+      return;
+    }
+    const warning = validateUrl(cleanUrl);
+    if (warning) {
+      setFeedback({ text: warning, success: false });
       return;
     }
     await updateSettings({ googleAppsScriptUrl: cleanUrl });
     setFeedback({ text: 'Google Apps Script URL saved!', success: true });
     setTimeout(() => setFeedback(null), 2500);
+  };
+
+  const handleCopyCodeGs = async () => {
+    try {
+      const res = await fetch('/Code.gs');
+      if (res.ok) {
+        const text = await res.text();
+        await navigator.clipboard.writeText(text);
+        setCopiedCode(true);
+        setTimeout(() => setCopiedCode(false), 2500);
+        return;
+      }
+    } catch {}
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2500);
   };
 
   const handleTestConnection = async () => {
@@ -47,10 +85,15 @@ export const SyncModal: React.FC<SyncModalProps> = ({
       return;
     }
 
+    const warning = validateUrl(targetUrl);
+    if (warning) {
+      setFeedback({ text: warning, success: false });
+      return;
+    }
+
     setIsTesting(true);
     setFeedback(null);
     try {
-      // Test GET endpoint
       const testUrl = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=status`;
       const res = await fetch(testUrl, { method: 'GET', mode: 'cors' }).catch(() => null);
       if (res && res.ok) {
@@ -64,15 +107,14 @@ export const SyncModal: React.FC<SyncModalProps> = ({
           setFeedback({ text: 'Connected! Ready to sync.', success: true });
         }
       } else {
-        // Many Apps Script redirects or CORS policies block reading GET in browser, but Webhook POST works
         setFeedback({
-          text: 'Webhook endpoint reached. Tap "Sync Now" to push transactions.',
+          text: 'Webhook URL reachable. Tap "Sync Now" to push your ledger to Google Sheets.',
           success: true,
         });
       }
     } catch {
       setFeedback({
-        text: 'URL saved. Ready to test dual-sync via POST.',
+        text: 'URL saved. Ready to sync via POST.',
         success: true,
       });
     } finally {
@@ -80,17 +122,31 @@ export const SyncModal: React.FC<SyncModalProps> = ({
     }
   };
 
+  const handleClearDemoAndSync = async () => {
+    if (window.confirm('Clear all demo data and start fresh? This will remove sample transactions while keeping your settings and Google Sheet URL.')) {
+      setIsClearing(true);
+      await clearDemoData(true);
+      setIsClearing(false);
+      setFeedback({ text: 'Demo records removed! Ledger is fresh and clean.', success: true });
+    }
+  };
+
   const handleSyncNow = async () => {
-    const targetUrl = urlInput.trim() || state.settings.googleAppsScriptUrl;
+    const targetUrl = (urlInput || state.settings.googleAppsScriptUrl || '').trim();
     if (!targetUrl) {
       setFeedback({ text: 'Please enter your Google Apps Script Web App URL first.', success: false });
+      return;
+    }
+
+    const warning = validateUrl(targetUrl);
+    if (warning) {
+      setFeedback({ text: warning, success: false });
       return;
     }
 
     setIsSyncing(true);
     setFeedback(null);
 
-    // If the input changed, save it first
     if (urlInput.trim() && urlInput.trim() !== state.settings.googleAppsScriptUrl) {
       await updateSettings({ googleAppsScriptUrl: urlInput.trim() });
     }
@@ -188,17 +244,30 @@ export const SyncModal: React.FC<SyncModalProps> = ({
               Save
             </button>
           </div>
+          {urlWarning && (
+            <p className="text-[11px] font-medium text-[#ba1a1a] bg-[#ffdad6]/60 p-2.5 rounded-xl border border-[#ffb4ab] leading-relaxed">
+              {urlWarning}
+            </p>
+          )}
         </div>
 
         {/* Setup Guide Accordion */}
         {showGuide && (
-          <div className="bg-[#f8f9ff] border border-[#dfe9fc] p-3 rounded-xl text-[11px] text-[#3e4942] space-y-1.5">
+          <div className="bg-[#f8f9ff] border border-[#dfe9fc] p-3 rounded-xl text-[11px] text-[#3e4942] space-y-2">
             <p className="font-bold text-[#121c2a]">Quick 3-Step Setup:</p>
-            <ol className="list-decimal list-inside space-y-1">
+            <ol className="list-decimal list-inside space-y-1 leading-relaxed">
               <li>Open your Google Sheet → <strong>Extensions → Apps Script</strong>.</li>
               <li>Paste the repository's <code>Code.gs</code> code and click <strong>Save</strong> (💾).</li>
-              <li>Click <strong>Deploy → New deployment</strong> (or Manage deployments), choose <strong>Web app</strong>, set <strong>Who has access: Anyone</strong>, then copy the URL ending in <code>/exec</code> and paste it above!</li>
+              <li>Click <strong>Deploy → New deployment</strong>, select <strong>Web app</strong>, set <strong>Execute as: Me</strong> and <strong>Who has access: Anyone</strong> (required!), then copy the Web app URL ending in <code>/exec</code> and paste it above!</li>
             </ol>
+            <button
+              type="button"
+              onClick={handleCopyCodeGs}
+              className="w-full py-2 rounded-xl bg-white border border-[#dfe9fc] hover:bg-[#88f8c4]/30 text-[12px] font-semibold text-[#006948] flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+            >
+              <span className="material-symbols-outlined text-[16px]">{copiedCode ? 'check' : 'content_copy'}</span>
+              <span>{copiedCode ? 'Code.gs Copied to Clipboard!' : 'Copy Code.gs Script'}</span>
+            </button>
           </div>
         )}
 
@@ -236,6 +305,18 @@ export const SyncModal: React.FC<SyncModalProps> = ({
               </>
             )}
           </button>
+
+          {isDemoDataLoaded && (
+            <button
+              type="button"
+              onClick={handleClearDemoAndSync}
+              disabled={isClearing || isSyncing}
+              className="w-full py-2 rounded-xl bg-[#ffdad6]/50 hover:bg-[#ffdad6] border border-[#ffb4ab] text-[#ba1a1a] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+            >
+              <span className="material-symbols-outlined text-[16px]">delete_sweep</span>
+              <span>{isClearing ? 'Clearing Demo Records...' : 'Clear Demo Data (Start Fresh)'}</span>
+            </button>
+          )}
 
           <div className="flex gap-2">
             <button

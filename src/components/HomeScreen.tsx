@@ -32,6 +32,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     budgetRemaining,
     daysRemainingInMonth,
     syncWithGoogleSheets,
+    clearDemoData,
+    isDemoDataLoaded,
   } = useApp();
 
   const [isSyncing, setIsSyncing] = useState(false);
@@ -348,6 +350,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             View All
           </button>
         </div>
+
+        {isDemoDataLoaded && (
+          <div className="bg-[#eff3ff] border border-[#dfe9fc] rounded-xl p-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="material-symbols-outlined text-[#006948] text-[18px] shrink-0">info</span>
+              <p className="text-[11px] text-[#3e4942] truncate">
+                Displaying sample student demo records.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm('Clear sample transactions and start fresh? Your settings and webhook URL will remain saved.')) {
+                  clearDemoData(true);
+                }
+              }}
+              className="px-2.5 py-1 rounded-lg bg-white border border-[#ffb4ab] text-[#ba1a1a] text-[11px] font-semibold hover:bg-[#ffdad6]/40 shrink-0 cursor-pointer shadow-xs"
+            >
+              Clear Demo Data
+            </button>
+          </div>
+        )}
 
         <div className="bg-white rounded-xl shadow-sm border border-[#dfe9fc]/50 overflow-hidden flex flex-col">
           {recentTransactions.map((tx, idx) => {

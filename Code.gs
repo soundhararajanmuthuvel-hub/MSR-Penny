@@ -12,21 +12,90 @@
  * 3. Duplicate protection (idempotency by transaction ID).
  * 4. Real-time balance calculations for Appa reimbursable expenses & repayments.
  * 5. Supports both doGet (read state) and doPost (sync/save).
+ * 6. Built-in Google Sheets UI menu ('🪙 MSR Penny') for instant 1-click actions!
+ * 
+ * 🟢 DEPLOYMENT INSTRUCTIONS:
+ * 1. Open your Google Sheet, click "Extensions" -> "Apps Script".
+ * 2. Paste this complete Code.gs file and save (Ctrl+S or Cmd+S).
+ * 3. Click "Deploy" (top right) -> "New deployment".
+ * 4. Click the gear icon next to "Select type" -> select "Web app".
+ * 5. Fill in:
+ *    - Description: "MSR Penny Dual Sync"
+ *    - Execute as: "Me" (your Google account)
+ *    - Who has access: "Anyone" (CRITICAL: Must be "Anyone" so MSR Penny can push data)
+ * 6. Click "Deploy", authorize permissions, and copy the "Web app URL" (ends in /exec).
+ * 7. Paste this URL into MSR Penny's Sync settings.
  */
 
-// Helper to return standardized JSON response
+// Helper to return standardized JSON response with CORS headers
 function jsonResponse(data) {
   return ContentService.createTextOutput(JSON.stringify(data))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
 /**
- * 🟢 RUN THIS FUNCTION IN APPS SCRIPT TO INITIALIZE YOUR SHEET IMMEDIATELY!
- * In the Apps Script toolbar, select "setupInitialSheets" and click "Run".
- * This creates all 5 tabs, sets emerald green headers, and configures currency columns.
+ * Custom Menu inside Google Sheets
+ * Appears automatically when opening the Google Sheet!
+ */
+function onOpen() {
+  try {
+    var ui = SpreadsheetApp.getUi();
+    ui.createMenu('🪙 MSR Penny')
+      .addItem('🚀 Setup All Sheets (Emerald Headers)', 'setupInitialSheets')
+      .addItem('📥 Import / Seed Demo Data', 'seedSampleData')
+      .addItem('🗑️ Clear All Demo Data (Keep Clean Headers)', 'clearAllDataKeepHeaders')
+      .addItem('🔄 Recalculate Appa Ledger & Balance', 'menuRebuildAppaLedger')
+      .addSeparator()
+      .addItem('ℹ️ Webhook URL & Deployment Guide', 'showWebhookHelp')
+      .addToUi();
+  } catch (e) {
+    // Suppress if running in headless web context
+  }
+}
+
+/**
+ * Safe spreadsheet resolver:
+ * Works whether container-bound to a sheet, or standalone with SPREADSHEET_ID.
+ */
+function getTargetSpreadsheet(payload) {
+  var ss = null;
+  try {
+    ss = SpreadsheetApp.getActiveSpreadsheet();
+  } catch (e) {}
+
+  if (!ss && payload) {
+    if (payload.spreadsheetId) {
+      try {
+        ss = SpreadsheetApp.openById(payload.spreadsheetId);
+      } catch (e) {}
+    } else if (payload.spreadsheetUrl) {
+      try {
+        ss = SpreadsheetApp.openByUrl(payload.spreadsheetUrl);
+      } catch (e) {}
+    }
+  }
+
+  if (!ss) {
+    try {
+      var propId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+      if (propId) {
+        ss = SpreadsheetApp.openById(propId);
+      }
+    } catch (e) {}
+  }
+
+  return ss;
+}
+
+/**
+ * 🟢 INITIALIZE ALL SHEETS IMMEDIATELY!
+ * Can be run from the Apps Script toolbar or the 'MSR Penny' menu inside Google Sheets.
  */
 function setupInitialSheets() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getTargetSpreadsheet();
+  if (!ss) {
+    throw new Error("No active Google Sheet linked! Please create this script via Google Sheets > Extensions > Apps Script.");
+  }
   
   // 1. Create Transactions tab
   getOrCreateSheet(ss, "Transactions", getTransactionsHeader());
@@ -63,20 +132,26 @@ function setupInitialSheets() {
 }
 
 /**
- * OPTIONAL: Run this to populate your sheet with initial sample data directly from Apps Script
+ * 📥 Populates the sheet with initial sample / demo data
  */
 function seedSampleData() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getTargetSpreadsheet();
+  if (!ss) {
+    throw new Error("No Google Sheet linked.");
+  }
   setupInitialSheets();
   
   var sampleTransactions = [
     { id: "tx-1", date: "2026-10-24", title: "Metro Recharge", type: "expense", amount: 100, category: "Travel", paymentMethod: "upi", isAppaReimbursable: false, appaSettled: false, notes: "Station kiosk topup" },
     { id: "tx-2", date: "2026-10-23", title: "Bus Pass (Appa)", type: "expense", amount: 40, category: "Travel", paymentMethod: "cash", isAppaReimbursable: true, appaSettled: false, notes: "Claimed to Appa - Daily bus pass ticket" },
     { id: "tx-3", date: "2026-10-22", title: "Poster Design Client", type: "income", amount: 800, category: "Freelance", paymentMethod: "upi", isAppaReimbursable: false, appaSettled: false, notes: "Tech Fest poster first draft approval" },
+    { id: "tx-4", date: "2026-10-21", title: "Canteen Lunch", type: "expense", amount: 65, category: "Food", paymentMethod: "upi", isAppaReimbursable: false, appaSettled: false, notes: "College campus meals" },
+    { id: "tx-5", date: "2026-10-20", title: "Printouts", type: "expense", amount: 45, category: "College", paymentMethod: "cash", isAppaReimbursable: false, appaSettled: false, notes: "CAD assignment prints" },
     { id: "tx-6", date: "2026-10-22", title: "College Bus Pass", type: "expense", amount: 100, category: "Travel", paymentMethod: "upi", isAppaReimbursable: true, appaSettled: false, notes: "Monthly route 14 for Appa" },
     { id: "tx-7", date: "2026-10-19", title: "Train Semester Ticket", type: "expense", amount: 60, category: "Travel", paymentMethod: "upi", isAppaReimbursable: true, appaSettled: false, notes: "Suburban railway for family visit" },
     { id: "tx-8", date: "2026-10-16", title: "Engineering Printouts", type: "expense", amount: 40, category: "College", paymentMethod: "cash", isAppaReimbursable: true, appaSettled: false, notes: "CAD design sheets for home plan" },
-    { id: "tx-9", date: "2026-10-18", title: "Cash from Appa", type: "repayment", amount: 300, category: "Family", paymentMethod: "cash", isAppaReimbursable: false, appaSettled: true, notes: "Handover morning settlement" }
+    { id: "tx-9", date: "2026-10-18", title: "Cash from Appa", type: "repayment", amount: 300, category: "Family", paymentMethod: "cash", isAppaReimbursable: false, appaSettled: true, notes: "Handover morning settlement" },
+    { id: "tx-10", date: "2026-10-05", title: "UPI from Appa", type: "repayment", amount: 300, category: "Family", paymentMethod: "upi", isAppaReimbursable: false, appaSettled: true, notes: "Direct bank credit" }
   ];
 
   var sampleJobs = [
@@ -99,12 +174,67 @@ function seedSampleData() {
 }
 
 /**
+ * 🗑️ Wipes all data rows but keeps the emerald green headers clean!
+ * Run this when starting fresh with your own real personal expenses.
+ */
+function clearAllDataKeepHeaders() {
+  var ss = getTargetSpreadsheet();
+  if (!ss) return;
+
+  var sheetNames = ["Transactions", "Appa_Ledger", "Freelance_Projects", "Savings_Goals"];
+  sheetNames.forEach(function(name) {
+    var sheet = ss.getSheetByName(name);
+    if (sheet && sheet.getLastRow() > 1) {
+      sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(1, sheet.getLastColumn())).clearContent();
+    }
+  });
+
+  updateSummaryDashboard(ss, [], { monthlyBudget: 4000 });
+  Logger.log("✅ All demo data wiped clean! Headers preserved.");
+}
+
+function menuRebuildAppaLedger() {
+  var ss = getTargetSpreadsheet();
+  if (ss) {
+    rebuildAppaLedger(ss);
+    updateSummaryDashboard(ss, [], {});
+  }
+}
+
+function showWebhookHelp() {
+  var html = HtmlService.createHtmlOutput(
+    '<div style="font-family:sans-serif;padding:16px;line-height:1.6;">' +
+    '<h3 style="color:#006948;margin-top:0;">🪙 MSR Penny Webhook Deployment</h3>' +
+    '<p>To connect your MSR Penny web app to this Google Sheet:</p>' +
+    '<ol>' +
+    '<li>Click <b>Deploy</b> (top right) &gt; <b>New deployment</b>.</li>' +
+    '<li>Select type: <b>Web app</b>.</li>' +
+    '<li>Execute as: <b>Me</b>.</li>' +
+    '<li>Who has access: <b style="color:#ba1a1a;">Anyone</b> (required).</li>' +
+    '<li>Click <b>Deploy</b> and copy the Web app URL ending in <code>/exec</code>.</li>' +
+    '<li>Open MSR Penny and paste it in the Sync modal.</li>' +
+    '</ol>' +
+    '</div>'
+  ).setWidth(450).setHeight(320);
+  SpreadsheetApp.getUi().showModalDialog(html, 'MSR Penny Webhook Setup');
+}
+
+/**
  * GET Handler
- * Allows fetching current status, transactions, or Appa balance directly.
+ * Used for live health check and balance queries.
  */
 function doGet(e) {
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ss = getTargetSpreadsheet();
+    if (!ss) {
+      return jsonResponse({
+        status: "error",
+        app: "MSR Penny Backend",
+        message: "No active Google Sheet linked. Open your Google Sheet, click Extensions > Apps Script, and paste Code.gs there.",
+        timestamp: new Date().toISOString()
+      });
+    }
+
     var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'status';
     
     if (action === 'get_balance' || action === 'get_appa_balance') {
@@ -124,7 +254,6 @@ function doGet(e) {
       var data = txSheet.getDataRange().getValues();
       var transactions = [];
       if (data.length > 1) {
-        var headers = data[0];
         for (var i = 1; i < data.length; i++) {
           var row = data[i];
           transactions.push({
@@ -154,8 +283,9 @@ function doGet(e) {
     return jsonResponse({
       status: "online",
       app: "MSR Penny Backend",
-      version: "1.2.0",
+      version: "1.3.0",
       activeSpreadsheet: ss.getName(),
+      sheetUrl: ss.getUrl(),
       appaBalance: currentBalance.balance,
       timestamp: new Date().toISOString()
     });
@@ -173,12 +303,11 @@ function doGet(e) {
  */
 function doPost(e) {
   var lock = LockService.getScriptLock();
-  // Wait up to 10 seconds for concurrent requests to prevent race conditions
-  lock.tryLock(10000);
+  lock.tryLock(15000);
 
   try {
     if (!e || !e.postData || !e.postData.contents) {
-      return jsonResponse({ success: false, error: "Empty request body." });
+      return jsonResponse({ success: false, error: "Empty request body received." });
     }
 
     var payload;
@@ -188,18 +317,35 @@ function doPost(e) {
       return jsonResponse({ success: false, error: "Invalid JSON format: " + parseError.toString() });
     }
 
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ss = getTargetSpreadsheet(payload);
+    if (!ss) {
+      return jsonResponse({
+        success: false,
+        error: "No Google Sheet linked! Please open your Google Sheet, click Extensions > Apps Script, and paste Code.gs there."
+      });
+    }
+
     var action = payload.action || 'sync_all';
 
-    // 1. Single Transaction Add / Upsert (Idempotent with duplicate prevention)
+    // 1. Wipe / Clear Demo Data action
+    if (action === 'clear_data') {
+      clearAllDataKeepHeaders();
+      return jsonResponse({
+        success: true,
+        message: "Google Sheet demo data wiped clean! Headers preserved.",
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // 2. Single Transaction Add / Upsert (Idempotent with duplicate prevention)
     if (action === 'add_transaction' || (payload.transaction && !payload.transactions)) {
       var tx = payload.transaction || payload;
       var result = saveSingleTransaction(ss, tx);
       return jsonResponse(result);
     }
 
-    // 2. Full State Sync
-    if (action === 'sync_all' || payload.transactions) {
+    // 3. Full State Sync (or sync with empty transactions when user cleared demo data)
+    if (action === 'sync_all' || Array.isArray(payload.transactions)) {
       var syncResult = syncAllData(ss, payload);
       return jsonResponse(syncResult);
     }
@@ -224,7 +370,8 @@ function syncAllData(ss, payload) {
   // 1. Transactions Sheet
   var txSheet = getOrCreateSheet(ss, "Transactions", getTransactionsHeader());
   if (txSheet.getLastRow() > 1) {
-    txSheet.getRange(2, 1, txSheet.getLastRow() - 1, txSheet.getLastColumn()).clearContent();
+    var lastCol = Math.max(1, txSheet.getLastColumn());
+    txSheet.getRange(2, 1, txSheet.getLastRow() - 1, lastCol).clearContent();
   }
 
   if (txList.length > 0) {
@@ -251,9 +398,7 @@ function syncAllData(ss, payload) {
   syncAppaLedgerSheet(ss, txList);
 
   // 3. Freelance Projects Sheet
-  if (jobsList && jobsList.length >= 0) {
-    syncFreelanceSheet(ss, jobsList);
-  }
+  syncFreelanceSheet(ss, jobsList);
 
   // 4. Savings & Goals Sheet
   if (savingsData) {
@@ -262,6 +407,14 @@ function syncAllData(ss, payload) {
 
   // 5. Dashboard Summary Sheet
   updateSummaryDashboard(ss, txList, settingsData);
+
+  // Remove default blank "Sheet1" if user created a fresh spreadsheet
+  var defaultSheet = ss.getSheetByName("Sheet1");
+  if (defaultSheet && ss.getSheets().length > 1) {
+    try {
+      ss.deleteSheet(defaultSheet);
+    } catch (e) {}
+  }
 
   var balanceInfo = calculateAppaBalanceFromSheet(ss);
 
@@ -315,10 +468,8 @@ function saveSingleTransaction(ss, tx) {
   }
 
   if (existingRowIndex > 0) {
-    // Update existing row
     txSheet.getRange(existingRowIndex, 1, 1, rowValues.length).setValues([rowValues]);
   } else {
-    // Append new row
     txSheet.appendRow(rowValues);
     formatCurrencyColumn(txSheet, 5, txSheet.getLastRow(), 1);
   }
@@ -327,7 +478,6 @@ function saveSingleTransaction(ss, tx) {
   var updatedBalanceData = calculateAppaBalanceFromSheet(ss);
   var updatedAppaBalance = updatedBalanceData.balance;
 
-  // Append or rebuild Appa Ledger
   rebuildAppaLedger(ss);
 
   return {
@@ -385,10 +535,10 @@ function syncAppaLedgerSheet(ss, transactions) {
   ]);
 
   if (appaSheet.getLastRow() > 1) {
-    appaSheet.getRange(2, 1, appaSheet.getLastRow() - 1, appaSheet.getLastColumn()).clearContent();
+    var lastCol = Math.max(1, appaSheet.getLastColumn());
+    appaSheet.getRange(2, 1, appaSheet.getLastRow() - 1, lastCol).clearContent();
   }
 
-  // Filter only relevant transactions and sort chronologically
   var relevant = (transactions || []).filter(function(t) {
     return t.isAppaReimbursable || t.type === 'repayment';
   }).sort(function(a, b) {
@@ -456,10 +606,11 @@ function syncFreelanceSheet(ss, jobs) {
   ]);
 
   if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+    var lastCol = Math.max(1, sheet.getLastColumn());
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).clearContent();
   }
 
-  if (jobs.length === 0) return;
+  if (!jobs || jobs.length === 0) return;
 
   var rows = jobs.map(function(j) {
     var milestonesSummary = (j.milestones || []).map(function(m) {
@@ -494,7 +645,8 @@ function syncSavingsSheet(ss, savings) {
   ]);
 
   if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+    var lastCol = Math.max(1, sheet.getLastColumn());
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).clearContent();
   }
 
   var rows = [];
@@ -555,7 +707,14 @@ function updateSummaryDashboard(ss, transactions, settings) {
   });
 
   var availableCash = Math.max(0, totalIncome - personalSpent);
-  var monthlyBudget = Number(settings.monthlyBudget) || 4000;
+  var monthlyBudget = (settings && Number(settings.monthlyBudget)) || 4000;
+
+  var formattedTime = "";
+  try {
+    formattedTime = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd MMM yyyy, hh:mm a");
+  } catch (e) {
+    formattedTime = new Date().toISOString();
+  }
 
   var summaryData = [
     ["Appa Outstanding Owed", "₹" + balanceInfo.balance, "Amount Appa owes back to you"],
@@ -563,11 +722,12 @@ function updateSummaryDashboard(ss, transactions, settings) {
     ["Total Personal Expenses", "₹" + personalSpent, "Excludes college expenses claimed to Appa"],
     ["Total Freelance & Inflows", "₹" + totalIncome, "Direct student & client income"],
     ["Monthly Budget Target", "₹" + monthlyBudget, "Configured in MSR Penny Settings"],
-    ["Last Synced Timestamp", new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }), "Synced from MSR Penny App"]
+    ["Last Synced Timestamp", formattedTime, "Synced from MSR Penny App"]
   ];
 
   if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+    var lastCol = Math.max(1, sheet.getLastColumn());
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).clearContent();
   }
 
   sheet.getRange(2, 1, summaryData.length, summaryData[0].length).setValues(summaryData);
@@ -610,7 +770,7 @@ function formatDateForSheet(dateStr) {
   if (!dateStr) return new Date().toISOString().split('T')[0];
   try {
     return new Date(dateStr).toISOString().split('T')[0];
-  } catch {
+  } catch (e) {
     return dateStr;
   }
 }
@@ -620,5 +780,5 @@ function formatCurrencyColumn(sheet, colIndex, startRow, numRows) {
     if (numRows > 0) {
       sheet.getRange(startRow, colIndex, numRows, 1).setNumberFormat('₹#,##0.00');
     }
-  } catch {}
+  } catch (e) {}
 }

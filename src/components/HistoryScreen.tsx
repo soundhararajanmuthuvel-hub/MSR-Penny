@@ -14,10 +14,11 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
   onSelectTransaction,
   onOpenAdd,
 }) => {
-  const { state } = useApp();
+  const { state, clearDemoData, isDemoDataLoaded } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
   const [selectedMonth, setSelectedMonth] = useState<string>('all');
+  const [isClearing, setIsClearing] = useState(false);
 
   const transactions = state.transactions || [];
 
@@ -104,6 +105,31 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
           ))}
         </div>
       </div>
+
+      {isDemoDataLoaded && (
+        <div className="bg-[#eff3ff] border border-[#dfe9fc] rounded-xl p-3 flex items-center justify-between gap-2 shadow-xs">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="material-symbols-outlined text-[#006948] text-[18px] shrink-0">info</span>
+            <p className="text-[11px] text-[#3e4942] truncate">
+              Demo sample transactions loaded.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={isClearing}
+            onClick={async () => {
+              if (window.confirm('Clear all demo transactions and start fresh? Your settings and webhook URL will remain saved.')) {
+                setIsClearing(true);
+                await clearDemoData(true);
+                setIsClearing(false);
+              }
+            }}
+            className="px-2.5 py-1 rounded-lg bg-white border border-[#ffb4ab] text-[#ba1a1a] text-[11px] font-semibold hover:bg-[#ffdad6]/40 shrink-0 cursor-pointer disabled:opacity-60"
+          >
+            {isClearing ? 'Clearing...' : 'Clear Demo Data'}
+          </button>
+        </div>
+      )}
 
       {/* Transaction Feed */}
       <div className="flex flex-col gap-4">

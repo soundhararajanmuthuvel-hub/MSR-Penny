@@ -7,11 +7,12 @@ interface ProfileModalProps {
 }
 
 export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) => {
-  const { state, updateSettings, resetToSampleData, syncWithGoogleSheets } = useApp();
+  const { state, updateSettings, resetToSampleData, clearDemoData, syncWithGoogleSheets } = useApp();
   const [userName, setUserName] = useState(state.settings.userName || 'Soundhar');
   const [appaPhone, setAppaPhone] = useState(state.settings.appaPhoneNumber || '+919876543210');
   const [scriptUrl, setScriptUrl] = useState(state.settings.googleAppsScriptUrl || '');
   const [isResetting, setIsResetting] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -40,6 +41,19 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
     setIsSyncing(false);
     setMessage(res.message);
     setTimeout(() => setMessage(null), 3500);
+  };
+
+  const handleClearDemo = async () => {
+    if (window.confirm('Clear all sample/demo data to start fresh? Your Google Sheet Webhook and WhatsApp number will stay saved.')) {
+      setIsClearing(true);
+      await clearDemoData(true);
+      setIsClearing(false);
+      setMessage('Demo data removed! Ledger is fresh.');
+      setTimeout(() => {
+        setMessage(null);
+        onClose();
+      }, 1200);
+    }
   };
 
   const handleReset = async () => {
@@ -150,11 +164,22 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
             </button>
 
             <button
+              type="button"
+              onClick={handleClearDemo}
+              disabled={isClearing}
+              className="w-full py-2.5 rounded-xl bg-[#ffdad6]/60 hover:bg-[#ffdad6] border border-[#ffb4ab] text-[#ba1a1a] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+            >
+              <span className="material-symbols-outlined text-[17px]">delete_sweep</span>
+              <span>{isClearing ? 'Clearing Demo Records...' : 'Clear Demo Data (Start Fresh)'}</span>
+            </button>
+
+            <button
               onClick={handleReset}
               disabled={isResetting}
-              className="w-full py-2.5 rounded-xl border border-[#dfe9fc] hover:bg-[#ffdad6]/30 text-[#ba1a1a] text-[12px] font-semibold transition-colors"
+              className="w-full py-2.5 rounded-xl border border-[#dfe9fc] hover:bg-[#eff3ff] text-[#3e4942] text-[12px] font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
             >
-              {isResetting ? 'Restoring...' : 'Restore Screenshot Sample Data'}
+              <span className="material-symbols-outlined text-[17px]">restart_alt</span>
+              <span>{isResetting ? 'Restoring...' : 'Restore Screenshot Sample Data'}</span>
             </button>
           </div>
         </div>
