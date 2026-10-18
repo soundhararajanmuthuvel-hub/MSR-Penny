@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { getTransactionIcon, formatDateLabel } from '../utils/categoryIcons';
 import { Transaction } from '../types';
@@ -31,7 +31,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     budgetUsedPercent,
     budgetRemaining,
     daysRemainingInMonth,
+    syncWithGoogleSheets,
   } = useApp();
+
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncNotice, setSyncNotice] = useState<{ text: string; success: boolean } | null>(null);
 
   const emergencyFund = state.savings.emergencyFund;
   const emergencyPercent = Math.min(
@@ -40,8 +44,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   );
 
   const recentTransactions = state.transactions.slice(0, 5);
-
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'short' });
+
+  const isSheetConfigured = Boolean(
+    state.settings.googleAppsScriptUrl && state.settings.googleAppsScriptUrl.trim().length > 10
+  );
+
+  const handleQuickSync = async () => {
+    setIsSyncing(true);
+    setSyncNotice(null);
+    const res = await syncWithGoogleSheets();
+    setIsSyncing(false);
+    setSyncNotice({ text: res.message, success: res.success });
+    setTimeout(() => {
+      setSyncNotice(null);
+    }, 5000);
+  };
 
   return (
     <div className="flex flex-col w-full gap-4 pb-8">
@@ -58,12 +76,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         <button
           onClick={onOpenSyncModal}
-          className="flex items-center gap-2 bg-[#eff3ff] hover:bg-[#dfe9fc] px-3 py-1.5 rounded-full shadow-xs transition-colors cursor-pointer active:scale-95"
+          className="flex items-center gap-1.5 bg-[#eff3ff] hover:bg-[#dfe9fc] px-3 py-1.5 rounded-full shadow-xs transition-colors cursor-pointer active:scale-95 border border-[#dfe9fc]/60"
           title="Click to check Google Sheets sync status"
         >
-          <span className="w-2 h-2 rounded-full bg-[#006948] animate-pulse" />
+          <span
+            className={`w-2 h-2 rounded-full ${
+              isSheetConfigured ? 'bg-[#006948] animate-pulse' : 'bg-[#e07f00]'
+            }`}
+          />
           <span className="text-[10px] text-[#006948] font-bold uppercase tracking-wider">
-            Live Dual-Sync
+            {isSheetConfigured ? 'Sheets Connected' : 'Connect Sheets'}
           </span>
         </button>
       </div>
@@ -162,6 +184,85 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         <span className="material-symbols-outlined text-[20px]">add</span>
         <span>Add Expense</span>
       </button>
+
+      {/* Google Sheets Dual-Sync Action Card */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/70 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div
+              className={`w-9 h-9 rounded-xl flex items-center justify-center ${
+                isSheetConfigured ? 'bg-[#88f8c4]/30 text-[#006948]' : 'bg-[#fff3cd] text-[#b7791f]'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[20px]">table_chart</span>
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <p className="text-[13px] font-bold text-[#121c2a]">Google Sheets Dual-Sync</p>
+                <span
+                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                    isSheetConfigured ? 'bg-[#88f8c4]/40 text-[#006948]' : 'bg-[#fed7aa] text-[#9a3412]'
+                  }`}
+                >
+                  {isSheetConfigured ? 'Connected' : 'Setup Required'}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#3e4942]">
+                {state.settings.lastSyncedAt
+                  ? `Last synced: ${new Date(state.settings.lastSyncedAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })} • ${state.transactions.length} rows`
+                  : isSheetConfigured
+                  ? 'Ready to sync personal expenses & Appa ledger'
+                  : 'Connect your Apps Script URL to sync'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {syncNotice && (
+          <div
+            className={`text-[12px] p-2.5 rounded-xl font-medium text-center ${
+              syncNotice.success
+                ? 'bg-[#88f8c4]/30 text-[#006948] border border-[#006948]/20'
+                : 'bg-[#ffdad6]/60 text-[#ba1a1a] border border-[#ba1a1a]/20'
+            }`}
+          >
+            {syncNotice.text}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 pt-0.5">
+          <button
+            type="button"
+            onClick={handleQuickSync}
+            disabled={isSyncing}
+            className="flex-1 h-10 rounded-xl bg-[#006948] hover:bg-[#00855d] active:scale-[0.99] text-white text-[12px] font-semibold flex items-center justify-center gap-1.5 shadow-[0_2px_8px_rgba(0,105,72,0.2)] transition-all cursor-pointer disabled:opacity-60"
+          >
+            {isSyncing ? (
+              <>
+                <span className="material-symbols-outlined text-[16px] animate-spin">refresh</span>
+                <span>Syncing to Sheets...</span>
+              </>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-[16px]">sync</span>
+                <span>Sync Now</span>
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenSyncModal}
+            className="h-10 px-3.5 rounded-xl border border-[#dfe9fc] hover:bg-[#eff3ff] text-[#121c2a] text-[12px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[16px] text-[#3e4942]">settings</span>
+            <span>{isSheetConfigured ? 'Configure' : 'Connect'}</span>
+          </button>
+        </div>
+      </div>
 
       {/* Dual Progress Section: Monthly Budget & Emergency Fund */}
       <div className="flex flex-col gap-3">

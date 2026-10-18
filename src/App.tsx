@@ -75,7 +75,11 @@ function MainApp() {
         showBack={subView !== 'none'}
         onBack={() => setSubView('none')}
         onAvatarClick={() => setIsProfileOpen(true)}
+        onSyncClick={() => setIsSyncOpen(true)}
         onNotificationsClick={() => setIsSyncOpen(true)}
+        isSheetConnected={Boolean(
+          state.settings.googleAppsScriptUrl && state.settings.googleAppsScriptUrl.trim().length > 10
+        )}
         userName={state.settings.userName}
       />
 

@@ -6,6 +6,8 @@ interface HeaderProps {
   showBack?: boolean;
   onAvatarClick?: () => void;
   onNotificationsClick?: () => void;
+  onSyncClick?: () => void;
+  isSheetConnected?: boolean;
   userName?: string;
 }
 
@@ -15,6 +17,8 @@ export const Header: React.FC<HeaderProps> = ({
   showBack = false,
   onAvatarClick,
   onNotificationsClick,
+  onSyncClick,
+  isSheetConnected = false,
 }) => {
   return (
     <header className="fixed top-0 inset-x-0 z-40 bg-[#f8f9ff]/85 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.03)] pt-safe">
@@ -35,21 +39,24 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Google Sheets Sync Button */}
           <button
-            aria-label="Notifications"
-            onClick={onNotificationsClick}
-            className="w-10 h-10 flex items-center justify-center rounded-full text-[#3e4942] hover:text-[#121c2a] hover:bg-[#dfe9fc]/40 transition-colors relative cursor-pointer"
+            aria-label="Google Sheets Sync"
+            onClick={onSyncClick || onNotificationsClick}
+            className="h-9 px-2.5 flex items-center gap-1.5 rounded-full text-[#121c2a] bg-[#eff3ff] hover:bg-[#dfe9fc] transition-colors relative cursor-pointer active:scale-95 border border-[#dfe9fc]/80"
+            title={isSheetConnected ? "Google Sheets Connected • Tap to Sync" : "Connect Google Sheets"}
           >
-            <span className="material-symbols-outlined text-[22px]">notifications_none</span>
-            <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-[#006948]" />
+            <span className="material-symbols-outlined text-[19px] text-[#006948]">cloud_sync</span>
+            <span className="text-[11px] font-semibold text-[#006948]">Sync</span>
+            <span className={`w-2 h-2 rounded-full ${isSheetConnected ? 'bg-[#006948] animate-pulse' : 'bg-[#e07f00]'}`} />
           </button>
 
           <button
             aria-label="User Profile"
             onClick={onAvatarClick}
-            className="w-8 h-8 rounded-full bg-[#006948] flex items-center justify-center shrink-0 cursor-pointer shadow-sm active:scale-95 transition-transform"
+            className="w-9 h-9 rounded-full bg-[#006948] flex items-center justify-center shrink-0 cursor-pointer shadow-sm active:scale-95 transition-transform"
           >
-            <span className="material-symbols-outlined text-white text-[18px]">person</span>
+            <span className="material-symbols-outlined text-white text-[19px]">person</span>
           </button>
         </div>
       </div>

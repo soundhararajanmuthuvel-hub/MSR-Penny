@@ -51,16 +51,41 @@ interface AppContextType {
   resetToSampleData: () => Promise<boolean>;
 }
 
-const defaultInitialState: AppState = initialSeedData;
+const getEffectiveEnvSettings = () => {
+  const envUrl = typeof import.meta !== 'undefined' ? (import.meta.env?.VITE_GOOGLE_APPS_SCRIPT_URL || '') : '';
+  const envPhone = typeof import.meta !== 'undefined' ? (import.meta.env?.VITE_APPA_WHATSAPP_NUMBER || '') : '';
+  return {
+    googleAppsScriptUrl: envUrl.trim(),
+    appaPhoneNumber: envPhone.trim() || '+919876543210',
+  };
+};
+
+const defaultInitialState: AppState = {
+  ...initialSeedData,
+  settings: {
+    ...initialSeedData.settings,
+    googleAppsScriptUrl: getEffectiveEnvSettings().googleAppsScriptUrl || initialSeedData.settings.googleAppsScriptUrl || '',
+    appaPhoneNumber: getEffectiveEnvSettings().appaPhoneNumber || initialSeedData.settings.appaPhoneNumber || '+919876543210',
+  },
+};
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [state, setState] = useState<AppState>(() => {
+    const envDefaults = getEffectiveEnvSettings();
     const cached = localStorage.getItem('my_money_app_state');
     if (cached) {
       try {
-        return JSON.parse(cached);
+        const parsed = JSON.parse(cached);
+        return {
+          ...parsed,
+          settings: {
+            ...parsed.settings,
+            googleAppsScriptUrl: (parsed.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim(),
+            appaPhoneNumber: (parsed.settings?.appaPhoneNumber || envDefaults.appaPhoneNumber || '+919876543210').trim(),
+          },
+        };
       } catch {
         return defaultInitialState;
       }
@@ -76,21 +101,29 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.setItem('my_money_app_state', JSON.stringify(state));
   }, [state]);
 
-  // Fetch initial state from Express backend
+  // Fetch initial state from Express backend (with graceful Vercel static fallback)
   const fetchState = async () => {
     try {
       setLoading(true);
       const res = await fetch('/api/state');
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const json = await res.json();
         if (json.success && json.data) {
-          setState(json.data);
+          const envDefaults = getEffectiveEnvSettings();
+          setState({
+            ...json.data,
+            settings: {
+              ...json.data.settings,
+              googleAppsScriptUrl: (json.data.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim(),
+              appaPhoneNumber: (json.data.settings?.appaPhoneNumber || envDefaults.appaPhoneNumber || '+919876543210').trim(),
+            },
+          });
           setError(null);
         }
       }
     } catch (err: any) {
       console.warn('Backend not available yet, using local state cache:', err);
-      // Fallback to local cache is already set
     } finally {
       setLoading(false);
     }
@@ -239,6 +272,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }));
       }
 
+      // Auto-stream to Google Sheets in background if configured
+      const scriptUrl = (state.settings?.googleAppsScriptUrl || getEffectiveEnvSettings().googleAppsScriptUrl || '').trim();
+      if (scriptUrl) {
+        fetch(scriptUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'add_transaction',
+            transaction: newTx,
+          }),
+        }).catch((e) => console.warn('Background Google Sheets stream notice:', e));
+      }
+
       return {
         success: true,
         transaction: json.transaction || newTx,
@@ -251,6 +298,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...prev,
         transactions: [newTx, ...prev.transactions],
       }));
+
+      // Direct push to Google Apps Script on static / client mode
+      const scriptUrl = (state.settings?.googleAppsScriptUrl || getEffectiveEnvSettings().googleAppsScriptUrl || '').trim();
+      if (scriptUrl) {
+        fetch(scriptUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'add_transaction',
+            transaction: newTx,
+          }),
+        }).catch((e) => console.warn('Background Google Sheets stream notice:', e));
+      }
+
       return {
         success: true,
         transaction: newTx,
@@ -629,34 +691,39 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const syncWithGoogleSheets = async (url?: string) => {
-    const targetUrl = url || state.settings.googleAppsScriptUrl;
+    const envDefaults = getEffectiveEnvSettings();
+    const targetUrl = (url || state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
     if (!targetUrl) {
-      return { success: false, message: 'Please provide a Google Apps Script Webhook URL in Settings.' };
+      return { 
+        success: false, 
+        message: 'Google Apps Script Web App URL is missing. Tap "Connect" to paste your Web App URL.' 
+      };
     }
 
+    let synced = false;
+    let syncedMessage = '';
+
+    // 1. Try server-side proxy if running in fullstack environment
     try {
       const res = await fetch('/api/sync/push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: targetUrl }),
       });
-
-      if (res.ok) {
+      const cType = res.headers.get('content-type') || '';
+      if (res.ok && cType.includes('application/json')) {
         const json = await res.json();
         if (json.success) {
-          const syncedAt = json.syncedAt || new Date().toISOString();
-          setState((prev) => ({
-            ...prev,
-            settings: { ...prev.settings, lastSyncedAt: syncedAt, syncEnabled: true },
-          }));
-          return { success: true, message: 'Dual-sync completed successfully to Google Sheets!' };
-        } else {
-          return { success: false, message: json.error || 'Failed to sync with Google Apps Script.' };
+          synced = true;
+          syncedMessage = 'Dual-sync completed successfully via cloud proxy!';
         }
       }
-      throw new Error(`Backend returned status ${res.status}`);
-    } catch (err: any) {
-      // Direct client-side push fallback for frontend-only / Vercel deployments
+    } catch {
+      // Backend proxy not available (static Vercel hosting)
+    }
+
+    // 2. Direct client-side push to Google Apps Script Web App (works on Vercel and PWA)
+    if (!synced) {
       try {
         const payload = {
           action: 'sync_all',
@@ -664,27 +731,52 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           transactions: state.transactions,
           freelanceJobs: state.freelanceJobs,
           savings: state.savings,
-          settings: state.settings,
+          settings: {
+            ...state.settings,
+            googleAppsScriptUrl: targetUrl,
+          },
         };
 
-        // Standard Apps Script web app endpoint accepts POST with no-cors or JSON
         await fetch(targetUrl, {
           method: 'POST',
           mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain' },
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify(payload),
         });
-
-        const syncedAt = new Date().toISOString();
-        setState((prev) => ({
-          ...prev,
-          settings: { ...prev.settings, lastSyncedAt: syncedAt, syncEnabled: true },
-        }));
-        return { success: true, message: 'Dual-sync payload dispatched to Google Sheets!' };
+        synced = true;
+        syncedMessage = `Dual-sync successful! ${state.transactions.length} transactions sent to Google Sheets.`;
       } catch (clientErr: any) {
-        return { success: false, message: clientErr.message || 'Network error while attempting sync.' };
+        return { 
+          success: false, 
+          message: clientErr.message || 'Network error while attempting to sync to Google Sheets.' 
+        };
       }
     }
+
+    const syncedAt = new Date().toISOString();
+    const updatedSettings: AppSettings = {
+      ...state.settings,
+      googleAppsScriptUrl: targetUrl,
+      lastSyncedAt: syncedAt,
+      syncEnabled: true,
+    };
+
+    setState((prev) => ({
+      ...prev,
+      settings: updatedSettings,
+    }));
+
+    try {
+      localStorage.setItem('my_money_app_state', JSON.stringify({
+        ...state,
+        settings: updatedSettings,
+      }));
+    } catch {}
+
+    return { 
+      success: true, 
+      message: syncedMessage || `Dual-sync successful! ${state.transactions.length} transactions synced.` 
+    };
   };
 
   const resetToSampleData = async () => {

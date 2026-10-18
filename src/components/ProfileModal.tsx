@@ -7,21 +7,39 @@ interface ProfileModalProps {
 }
 
 export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) => {
-  const { state, updateSettings, resetToSampleData } = useApp();
+  const { state, updateSettings, resetToSampleData, syncWithGoogleSheets } = useApp();
   const [userName, setUserName] = useState(state.settings.userName || 'Soundhar');
   const [appaPhone, setAppaPhone] = useState(state.settings.appaPhoneNumber || '+919876543210');
+  const [scriptUrl, setScriptUrl] = useState(state.settings.googleAppsScriptUrl || '');
   const [isResetting, setIsResetting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleSave = async () => {
-    await updateSettings({ userName, appaPhoneNumber: appaPhone.trim() });
-    setMessage('Profile updated!');
+    await updateSettings({
+      userName,
+      appaPhoneNumber: appaPhone.trim(),
+      googleAppsScriptUrl: scriptUrl.trim(),
+    });
+    setMessage('Profile & Settings updated!');
     setTimeout(() => {
       setMessage(null);
       onClose();
     }, 1000);
+  };
+
+  const handleSyncFromProfile = async () => {
+    setIsSyncing(true);
+    const target = scriptUrl.trim() || state.settings.googleAppsScriptUrl;
+    if (scriptUrl.trim() && scriptUrl.trim() !== state.settings.googleAppsScriptUrl) {
+      await updateSettings({ googleAppsScriptUrl: scriptUrl.trim() });
+    }
+    const res = await syncWithGoogleSheets(target);
+    setIsSyncing(false);
+    setMessage(res.message);
+    setTimeout(() => setMessage(null), 3500);
   };
 
   const handleReset = async () => {
@@ -82,19 +100,48 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
             />
           </div>
 
+          <div>
+            <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
+              Google Apps Script Web App URL
+            </label>
+            <input
+              type="url"
+              value={scriptUrl}
+              onChange={(e) => setScriptUrl(e.target.value)}
+              placeholder="https://script.google.com/macros/s/.../exec"
+              className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[12px] font-mono text-[#121c2a] focus:outline-none focus:border-[#006948]"
+            />
+          </div>
+
           <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/50 text-[11px] text-[#3e4942] space-y-1">
+            <div className="flex items-center justify-between">
+              <span><strong>Google Sheets:</strong></span>
+              <span className={`font-bold ${scriptUrl ? 'text-[#006948]' : 'text-[#b7791f]'}`}>
+                {scriptUrl ? 'Connected' : 'Not configured'}
+              </span>
+            </div>
             <p><strong>App Identity:</strong> MSR Penny PWA</p>
             <p><strong>Email:</strong> soundhararajanmuthuvel@gmail.com</p>
-            <p><strong>Access Mode:</strong> Single User • Cloud Run & Local Storage</p>
           </div>
 
           {message && (
-            <p className="text-[11px] text-[#006948] font-semibold text-center bg-[#88f8c4]/30 py-1.5 rounded-lg">
+            <p className="text-[11px] text-[#006948] font-semibold text-center bg-[#88f8c4]/30 py-2 rounded-lg">
               {message}
             </p>
           )}
 
           <div className="pt-2 flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={handleSyncFromProfile}
+              disabled={isSyncing}
+              className="w-full py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[13px] font-semibold flex items-center justify-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-60"
+            >
+              <span className={`material-symbols-outlined text-[17px] ${isSyncing ? 'animate-spin' : ''}`}>
+                {isSyncing ? 'refresh' : 'sync'}
+              </span>
+              <span>{isSyncing ? 'Syncing to Google Sheets...' : 'Sync Now'}</span>
+            </button>
             <button
               onClick={handleSave}
               className="w-full py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[13px] font-semibold shadow-xs"
