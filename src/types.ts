@@ -12,6 +12,15 @@ export type TransactionCategory =
   | 'Family'
   | 'Other';
 
+export interface FamilyContact {
+  id: string;
+  name: string;
+  phoneNumber?: string;
+  active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface Transaction {
   id: string;
   type: TransactionType;
@@ -20,12 +29,19 @@ export interface Transaction {
   category: TransactionCategory;
   date: string; // YYYY-MM-DD
   paymentMethod: PaymentMethod;
-  isAppaReimbursable: boolean;
-  appaSettled: boolean;
+  isAppaReimbursable: boolean; // Kept for 100% backward compatibility
+  appaSettled: boolean;        // Kept for 100% backward compatibility
   freelanceJobId?: string;
   milestoneTitle?: string;
   notes?: string;
   createdAt: string;
+  // Family settlements extensions
+  isFamilyReimbursable?: boolean;
+  familyContactId?: string;
+  familyContactName?: string;
+  settlementStatus?: 'pending' | 'settled';
+  repaymentForContactId?: string;
+  needsReview?: boolean;
 }
 
 export interface Milestone {
@@ -87,16 +103,32 @@ export interface AppSettings {
   lastSyncedAt: string | null;
   syncEnabled: boolean;
   currency: string;
+  familyContacts?: FamilyContact[];
 }
 
-export interface AppaNotificationData {
+export interface FamilyNotificationData {
   type: 'expense' | 'repayment';
   title: string;
   amount: number;
   date: string;
+  contactId: string;
+  contactName: string;
+  phoneNumber?: string;
   previousBalance: number;
   updatedBalance: number;
   paymentMethod?: string;
+}
+
+// Backward-compatible alias
+export type AppaNotificationData = FamilyNotificationData;
+
+export interface FamilyContactBalance {
+  contact: FamilyContact;
+  totalReimbursable: number;
+  totalRepaid: number;
+  outstandingBalance: number;
+  pendingCount: number;
+  lastSettlementDate?: string;
 }
 
 export interface AppState {
@@ -104,4 +136,6 @@ export interface AppState {
   freelanceJobs: FreelanceJob[];
   savings: SavingsState;
   settings: AppSettings;
+  familyContacts?: FamilyContact[];
 }
+

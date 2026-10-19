@@ -1,40 +1,69 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
+import { formatPhoneNumberDisplay, normalizeWhatsAppNumber } from '../utils/phoneNormalizer';
 
 export const ReportsScreen: React.FC = () => {
   const {
     state,
     totalIncome,
     currentMonthSpent,
-    totalAppaPaidByMe,
-    totalAppaRepaid,
-    appaOwesMe,
+    totalFamilyOutstanding,
+    totalFamilyExpensesWaiting,
+    totalFamilyRepaid,
+    familyBalances,
+    familyContacts,
     availableBalance,
     monthlyBudget,
     updateSettings,
+    updateFamilyContact,
     syncWithGoogleSheets,
+    refreshFromGoogleSheets,
   } = useApp();
 
   const [scriptUrlInput, setScriptUrlInput] = useState(
-    state.settings.googleAppsScriptUrl || ''
+    state.settings?.googleAppsScriptUrl || ''
   );
-  const [budgetInput, setBudgetInput] = useState(String(state.settings.monthlyBudget || 4000));
-  const [appaPhoneInput, setAppaPhoneInput] = useState(state.settings.appaPhoneNumber || '+919876543210');
+  const [budgetInput, setBudgetInput] = useState(String(state.settings?.monthlyBudget || 4000));
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [showScriptModal, setShowScriptModal] = useState<boolean>(false);
 
-  const handleSaveAppaPhone = async () => {
-    await updateSettings({ appaPhoneNumber: appaPhoneInput.trim() });
-    setSyncStatus("Appa's WhatsApp phone number updated!");
-    setTimeout(() => setSyncStatus(null), 2500);
-  };
+  // Editing contact phone numbers
+  const [editingContactId, setEditingContactId] = useState<string | null>(null);
+  const [phoneInput, setPhoneInput] = useState<string>('');
 
-  // Category breakdown calculation
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  // Freelance Income for current month
+  const freelanceIncome = useMemo(() => {
+    return state.transactions
+      .filter((t) => {
+        const d = new Date(t.date);
+        return (
+          d.getFullYear() === currentYear &&
+          d.getMonth() === currentMonth &&
+          t.type === 'income' &&
+          (t.category === 'Freelance' || Boolean(t.freelanceJobId))
+        );
+      })
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+  }, [state.transactions, currentYear, currentMonth]);
+
+  // Category breakdown calculation (strictly personal expenses)
   const categoryBreakdown = useMemo(() => {
-    const expenses = state.transactions.filter(
-      (t) => t.type === 'expense' && !t.isAppaReimbursable
-    );
+    const expenses = state.transactions.filter((t) => {
+      const d = new Date(t.date);
+      return (
+        d.getFullYear() === currentYear &&
+        d.getMonth() === currentMonth &&
+        t.type === 'expense' &&
+        !t.isFamilyReimbursable &&
+        !t.isAppaReimbursable
+      );
+    });
+
     const totals: Record<string, number> = {};
     let grandTotal = 0;
 
@@ -50,7 +79,7 @@ export const ReportsScreen: React.FC = () => {
     }));
 
     return categories.sort((a, b) => b.amount - a.amount);
-  }, [state.transactions]);
+  }, [state.transactions, currentYear, currentMonth]);
 
   // Payment Method Breakdown
   const paymentMethodBreakdown = useMemo(() => {
@@ -88,15 +117,41 @@ export const ReportsScreen: React.FC = () => {
 
   const handleTriggerSync = async () => {
     setIsSyncing(true);
-    setSyncStatus('Connecting to Google Apps Script...');
+    setSyncStatus('Syncing with Google Sheets...');
+    await refreshFromGoogleSheets().catch(() => {});
     const result = await syncWithGoogleSheets(scriptUrlInput.trim());
     setIsSyncing(false);
     setSyncStatus(result.message);
     setTimeout(() => setSyncStatus(null), 4000);
   };
 
+  const handleSaveContactPhone = async (contactId: string) => {
+    const contact = familyContacts.find((c) => c.id === contactId);
+    if (!contact) return;
+
+    await updateFamilyContact({
+      ...contact,
+      phoneNumber: phoneInput.trim(),
+    });
+    setEditingContactId(null);
+    setSyncStatus(`${contact.name}'s WhatsApp number updated!`);
+    setTimeout(() => setSyncStatus(null), 2500);
+  };
+
   const handleExportCSV = () => {
-    const headers = ['ID', 'Date', 'Type', 'Title', 'Amount', 'Category', 'PaymentMethod', 'AppaReimbursable', 'Notes'];
+    const headers = [
+      'Transaction ID',
+      'Date',
+      'Type',
+      'Description',
+      'Amount',
+      'Category',
+      'Payment Method',
+      'Family Contact',
+      'Settlement Status',
+      'Notes',
+    ];
+
     const rows = state.transactions.map((t) => [
       t.id,
       t.date,
@@ -105,66 +160,40 @@ export const ReportsScreen: React.FC = () => {
       t.amount,
       t.category,
       t.paymentMethod,
-      t.isAppaReimbursable ? 'YES' : 'NO',
+      t.familyContactName || (t.isAppaReimbursable ? 'Appa' : '-'),
+      t.settlementStatus || (t.appaSettled ? 'settled' : 'pending'),
       `"${(t.notes || '').replace(/"/g, '""')}"`,
     ]);
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const csvContent =
+      'data:text/csv;charset=utf-8,' +
+      [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `msr_penny_export_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute(
+      'download',
+      `msr_penny_export_${new Date().toISOString().split('T')[0]}.csv`
+    );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
   const handleExportJSON = () => {
-    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state, null, 2));
+    const dataStr =
+      'data:text/json;charset=utf-8,' +
+      encodeURIComponent(JSON.stringify(state, null, 2));
     const downloadAnchor = document.createElement('a');
     downloadAnchor.setAttribute('href', dataStr);
-    downloadAnchor.setAttribute('download', `msr_penny_backup_${new Date().toISOString().split('T')[0]}.json`);
+    downloadAnchor.setAttribute(
+      'download',
+      `msr_penny_backup_${new Date().toISOString().split('T')[0]}.json`
+    );
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
   };
-
-  const appsScriptCode = `/**
- * Google Apps Script Webhook for MSR Penny Dual-Sync
- * In your Google Sheet: Extensions -> Apps Script -> Paste this code -> Deploy as Web App (Anyone)
- */
-function doPost(e) {
-  try {
-    var data = JSON.parse(e.postData.contents);
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    
-    // Transactions Sheet
-    var txSheet = ss.getSheetByName("Transactions") || ss.insertSheet("Transactions");
-    if (txSheet.getLastRow() === 0) {
-      txSheet.appendRow(["ID", "Date", "Type", "Title", "Amount", "Category", "PaymentMethod", "AppaReimbursable", "Notes"]);
-    }
-    
-    if (data.transactions && data.transactions.length > 0) {
-      // Clear and re-write all rows for sync
-      txSheet.getRange(2, 1, Math.max(1, txSheet.getLastRow() - 1), 9).clearContent();
-      var rows = data.transactions.map(function(t) {
-        return [t.id, t.date, t.type, t.title, t.amount, t.category, t.paymentMethod, t.isAppaReimbursable ? "YES" : "NO", t.notes || ""];
-      });
-      txSheet.getRange(2, 1, rows.length, 9).setValues(rows);
-    }
-    
-    return ContentService.createTextOutput(JSON.stringify({
-      status: "success",
-      rowsSynced: data.transactions ? data.transactions.length : 0,
-      timestamp: new Date().toISOString()
-    })).setMimeType(ContentService.MimeType.JSON);
-  } catch(err) {
-    return ContentService.createTextOutput(JSON.stringify({
-      status: "error",
-      message: err.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}`;
 
   return (
     <div className="flex flex-col w-full gap-4 pb-28">
@@ -175,8 +204,8 @@ function doPost(e) {
             <span className="material-symbols-outlined text-[22px]">insights</span>
           </div>
           <div>
-            <h2 className="text-[16px] font-bold text-[#121c2a]">Financial Reports & Sync</h2>
-            <p className="text-[11px] text-[#3e4942]">Monthly statistics, analytics & cloud sync</p>
+            <h2 className="text-[16px] font-bold text-[#121c2a]">Financial Reports & Settings</h2>
+            <p className="text-[11px] text-[#3e4942]">Monthly statistics, family settlements & cloud sync</p>
           </div>
         </div>
       </div>
@@ -184,7 +213,7 @@ function doPost(e) {
       {/* Monthly Financial Health Summary */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3">
         <span className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block">
-          Current Month Summary
+          Current Month Breakdown
         </span>
 
         <div className="grid grid-cols-2 gap-2.5">
@@ -193,6 +222,7 @@ function doPost(e) {
             <span className="text-[18px] font-bold text-[#006948] tabular-nums">
               ₹{totalIncome.toLocaleString('en-IN')}
             </span>
+            <span className="text-[9px] text-[#3e4942] block mt-0.5">Freelance: ₹{freelanceIncome.toLocaleString('en-IN')}</span>
           </div>
 
           <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/50">
@@ -200,13 +230,15 @@ function doPost(e) {
             <span className="text-[18px] font-bold text-[#ba1a1a] tabular-nums">
               ₹{currentMonthSpent.toLocaleString('en-IN')}
             </span>
+            <span className="text-[9px] text-[#3e4942] block mt-0.5">Excludes family split</span>
           </div>
 
           <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/50">
-            <span className="text-[10px] text-[#3e4942] block">Appa Outstanding</span>
+            <span className="text-[10px] text-[#3e4942] block">Family Outstanding</span>
             <span className="text-[18px] font-bold text-[#894d00] tabular-nums">
-              ₹{appaOwesMe.toLocaleString('en-IN')}
+              ₹{totalFamilyOutstanding.toLocaleString('en-IN')}
             </span>
+            <span className="text-[9px] text-[#3e4942] block mt-0.5">Across all contacts</span>
           </div>
 
           <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/50">
@@ -214,7 +246,56 @@ function doPost(e) {
             <span className="text-[18px] font-bold text-[#121c2a] tabular-nums">
               ₹{availableBalance.toLocaleString('en-IN')}
             </span>
+            <span className="text-[9px] text-[#3e4942] block mt-0.5">Income − Personal spent</span>
           </div>
+        </div>
+      </div>
+
+      {/* Family Settlements by Contact Table */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[13px] font-bold text-[#121c2a]">Family Settlements Summary</span>
+          <span className="text-[11px] text-[#006948] font-bold">
+            Total Owed: ₹{totalFamilyOutstanding.toLocaleString('en-IN')}
+          </span>
+        </div>
+
+        <div className="divide-y divide-[#dfe9fc]/60 text-[12px]">
+          {familyContacts.map((contact) => {
+            const bal = familyBalances[contact.id] || {
+              totalReimbursable: 0,
+              totalRepaid: 0,
+              outstandingBalance: 0,
+              pendingCount: 0,
+            };
+
+            return (
+              <div key={contact.id} className="py-2.5 flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <strong className="text-[#121c2a]">{contact.name}</strong>
+                    {bal.outstandingBalance === 0 && (
+                      <span className="text-[9px] bg-[#88f8c4]/40 text-[#006948] px-1.5 py-0.2 rounded-md font-bold">
+                        Settled
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[11px] text-[#3e4942]">
+                    Paid: ₹{bal.totalReimbursable} • Repaid: ₹{bal.totalRepaid}
+                  </span>
+                </div>
+
+                <div className="text-right">
+                  <span className="text-[14px] font-bold text-[#006948] tabular-nums">
+                    ₹{bal.outstandingBalance.toLocaleString('en-IN')}
+                  </span>
+                  <span className="text-[10px] text-[#3e4942] block">
+                    {bal.pendingCount} pending items
+                  </span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -246,7 +327,7 @@ function doPost(e) {
           ))}
 
           {categoryBreakdown.length === 0 && (
-            <p className="text-[12px] text-[#6d7a72] py-2 text-center">No expenses recorded yet.</p>
+            <p className="text-[12px] text-[#6d7a72] py-2 text-center">No personal expenses recorded this month.</p>
           )}
         </div>
       </div>
@@ -290,37 +371,71 @@ function doPost(e) {
         </div>
       </div>
 
-      {/* Appa WhatsApp Contact Settings */}
+      {/* Family Contacts & WhatsApp Configuration */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-xl bg-[#ffdcc0] flex items-center justify-center text-[#894d00]">
-            <span className="material-symbols-outlined text-[18px]">chat</span>
+            <span className="material-symbols-outlined text-[18px]">contacts</span>
           </div>
           <div>
-            <span className="text-[13px] font-bold text-[#121c2a]">Appa's WhatsApp Contact</span>
-            <p className="text-[11px] text-[#3e4942]">For prefilling settlement & expense notifications</p>
+            <span className="text-[13px] font-bold text-[#121c2a]">Family WhatsApp Contacts</span>
+            <p className="text-[11px] text-[#3e4942]">Configured recipients for WhatsApp settlement sharing</p>
           </div>
         </div>
 
-        <div className="space-y-1.5">
-          <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block">
-            Phone Number (with Country Code)
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              type="tel"
-              value={appaPhoneInput}
-              onChange={(e) => setAppaPhoneInput(e.target.value)}
-              placeholder="+919876543210"
-              className="flex-1 px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[13px] text-[#121c2a] focus:outline-none focus:border-[#006948]"
-            />
-            <button
-              onClick={handleSaveAppaPhone}
-              className="px-4 py-2 bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold rounded-xl cursor-pointer"
-            >
-              Save
-            </button>
-          </div>
+        <div className="space-y-2">
+          {familyContacts.map((contact) => {
+            const isEditing = editingContactId === contact.id;
+            return (
+              <div
+                key={contact.id}
+                className="p-3 bg-[#f8f9ff] border border-[#dfe9fc]/70 rounded-xl space-y-2"
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-[13px] font-bold text-[#121c2a]">{contact.name}</span>
+                    <span className="text-[11px] text-[#3e4942] block">
+                      {formatPhoneNumberDisplay(contact.phoneNumber)}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isEditing) {
+                        setEditingContactId(null);
+                      } else {
+                        setEditingContactId(contact.id);
+                        setPhoneInput(contact.phoneNumber || '');
+                      }
+                    }}
+                    className="text-[11px] text-[#006948] font-semibold hover:underline cursor-pointer"
+                  >
+                    {isEditing ? 'Cancel' : 'Edit Number'}
+                  </button>
+                </div>
+
+                {isEditing && (
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      type="tel"
+                      value={phoneInput}
+                      onChange={(e) => setPhoneInput(e.target.value)}
+                      placeholder="+919876543210"
+                      className="flex-1 px-3 py-1.5 bg-white border border-[#dfe9fc] rounded-lg text-[12px] text-[#121c2a] focus:outline-none focus:border-[#006948]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleSaveContactPhone(contact.id)}
+                      className="px-3 py-1.5 bg-[#006948] text-white text-[11px] font-semibold rounded-lg cursor-pointer"
+                    >
+                      Save
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -393,13 +508,13 @@ function doPost(e) {
             {isSyncing ? (
               <span className="material-symbols-outlined text-[16px] animate-spin">refresh</span>
             ) : (
-              <span className="material-symbols-outlined text-[16px]">cloud_upload</span>
+              <span className="material-symbols-outlined text-[16px]">cloud_sync</span>
             )}
             <span>{isSyncing ? 'Syncing...' : 'Sync to Sheets'}</span>
           </button>
         </div>
 
-        {state.settings.lastSyncedAt && (
+        {state.settings?.lastSyncedAt && (
           <p className="text-[10px] text-[#006948] font-medium text-center">
             Last dual-synced: {new Date(state.settings.lastSyncedAt).toLocaleString()}
           </p>
@@ -433,56 +548,6 @@ function doPost(e) {
           </button>
         </div>
       </div>
-
-      {/* Google Apps Script Modal */}
-      {showScriptModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-md max-h-[85vh] bg-white rounded-2xl p-5 shadow-2xl flex flex-col space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-[16px] font-bold text-[#121c2a]">Google Apps Script Setup</h3>
-              <button
-                onClick={() => setShowScriptModal(false)}
-                className="w-8 h-8 flex items-center justify-center rounded-full text-[#3e4942] hover:bg-[#eff3ff]"
-              >
-                <span className="material-symbols-outlined text-[18px]">close</span>
-              </button>
-            </div>
-
-            <p className="text-[11px] text-[#3e4942]">
-              1. Open a Google Sheet. Go to <strong>Extensions &gt; Apps Script</strong>.<br />
-              2. Paste the code below and click <strong>Save</strong>.<br />
-              3. Click <strong>Deploy &gt; New deployment &gt; Web app</strong>. Set "Who has access" to "Anyone".<br />
-              4. Copy the Web app URL and paste it into the field above.
-            </p>
-
-            <textarea
-              readOnly
-              value={appsScriptCode}
-              rows={10}
-              className="w-full p-2.5 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[11px] font-mono text-[#121c2a] select-all focus:outline-none"
-            />
-
-            <div className="flex justify-end gap-2 pt-1">
-              <button
-                onClick={() => {
-                  navigator.clipboard?.writeText(appsScriptCode);
-                  setSyncStatus('Apps Script code copied to clipboard!');
-                  setTimeout(() => setSyncStatus(null), 2500);
-                }}
-                className="px-4 py-2 bg-[#006948] text-white text-[12px] font-semibold rounded-xl"
-              >
-                Copy Code
-              </button>
-              <button
-                onClick={() => setShowScriptModal(false)}
-                className="px-4 py-2 border border-[#dfe9fc] text-[#3e4942] text-[12px] font-semibold rounded-xl"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

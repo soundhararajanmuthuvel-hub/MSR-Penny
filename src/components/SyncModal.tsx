@@ -11,14 +11,23 @@ export const SyncModal: React.FC<SyncModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { state, syncWithGoogleSheets, updateSettings, clearDemoData, isDemoDataLoaded } = useApp();
+  const {
+    state,
+    syncWithGoogleSheets,
+    refreshFromGoogleSheets,
+    updateSettings,
+    clearDemoData,
+    isDemoDataLoaded,
+  } = useApp();
   const [urlInput, setUrlInput] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; success: boolean } | null>(null);
   const [showGuide, setShowGuide] = useState(false);
+
 
   useEffect(() => {
     if (isOpen) {
@@ -131,6 +140,31 @@ export const SyncModal: React.FC<SyncModalProps> = ({
     }
   };
 
+  const handleRefreshNow = async () => {
+    const targetUrl = (urlInput || state.settings.googleAppsScriptUrl || '').trim();
+    if (!targetUrl) {
+      setFeedback({ text: 'Please enter your Google Apps Script Web App URL first.', success: false });
+      return;
+    }
+
+    const warning = validateUrl(targetUrl);
+    if (warning) {
+      setFeedback({ text: warning, success: false });
+      return;
+    }
+
+    setIsRefreshing(true);
+    setFeedback(null);
+
+    if (urlInput.trim() && urlInput.trim() !== state.settings.googleAppsScriptUrl) {
+      await updateSettings({ googleAppsScriptUrl: urlInput.trim() });
+    }
+
+    const res = await refreshFromGoogleSheets();
+    setIsRefreshing(false);
+    setFeedback({ text: res.message, success: res.success });
+  };
+
   const handleSyncNow = async () => {
     const targetUrl = (urlInput || state.settings.googleAppsScriptUrl || '').trim();
     if (!targetUrl) {
@@ -151,10 +185,13 @@ export const SyncModal: React.FC<SyncModalProps> = ({
       await updateSettings({ googleAppsScriptUrl: urlInput.trim() });
     }
 
+    // Bidirectional sync: Pull remote first to protect existing records, then push
+    await refreshFromGoogleSheets().catch(() => {});
     const res = await syncWithGoogleSheets(targetUrl);
     setIsSyncing(false);
     setFeedback({ text: res.message, success: res.success });
   };
+
 
   return (
     <div className="fixed inset-0 z-50 bg-black/45 backdrop-blur-xs flex items-center justify-center p-4">
@@ -286,11 +323,31 @@ export const SyncModal: React.FC<SyncModalProps> = ({
 
         {/* Action Buttons */}
         <div className="pt-2 flex flex-col gap-2">
+          {/* Refresh / Import from Google Sheets Button */}
+          <button
+            type="button"
+            onClick={handleRefreshNow}
+            disabled={isRefreshing || isSyncing}
+            className="w-full py-2.5 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] active:scale-[0.99] text-[#006948] text-[13px] font-semibold flex items-center justify-center gap-2 border border-[#006948]/30 transition-all cursor-pointer disabled:opacity-60"
+          >
+            {isRefreshing ? (
+              <>
+                <span className="material-symbols-outlined text-[18px] animate-spin">refresh</span>
+                <span>Fetching records from Google Sheets...</span>
+              </>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-[18px]">cloud_download</span>
+                <span>Import / Refresh from Google Sheets</span>
+              </>
+            )}
+          </button>
+
           {/* Main Primary Green Sync Now Button */}
           <button
             type="button"
             onClick={handleSyncNow}
-            disabled={isSyncing}
+            disabled={isSyncing || isRefreshing}
             className="w-full py-3 rounded-xl bg-[#006948] hover:bg-[#00855d] active:scale-[0.99] text-white text-[13px] font-semibold flex items-center justify-center gap-2 shadow-[0_4px_12px_rgba(0,105,72,0.25)] transition-all cursor-pointer disabled:opacity-60"
           >
             {isSyncing ? (
@@ -301,7 +358,7 @@ export const SyncModal: React.FC<SyncModalProps> = ({
             ) : (
               <>
                 <span className="material-symbols-outlined text-[18px]">sync</span>
-                <span>Sync Now</span>
+                <span>Sync Now (Bidirectional)</span>
               </>
             )}
           </button>

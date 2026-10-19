@@ -8,47 +8,54 @@ interface HistoryScreenProps {
   onOpenAdd: () => void;
 }
 
-type FilterType = 'all' | 'expense' | 'income' | 'appa' | 'freelance';
+type FilterType = 'all' | 'expense' | 'income' | 'family' | 'repayment' | 'freelance';
 
 export const HistoryScreen: React.FC<HistoryScreenProps> = ({
   onSelectTransaction,
   onOpenAdd,
 }) => {
-  const { state, clearDemoData, isDemoDataLoaded } = useApp();
+  const { state, familyContacts, clearDemoData, isDemoDataLoaded } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
-  const [selectedMonth, setSelectedMonth] = useState<string>('all');
+  const [selectedMember, setSelectedMember] = useState<string>('all');
   const [isClearing, setIsClearing] = useState(false);
 
   const transactions = state.transactions || [];
+  const activeContacts = familyContacts.filter((c) => c.active !== false);
 
   const filteredTransactions = useMemo(() => {
     return transactions.filter((tx) => {
-      // Search
+      // Search query filter
       const q = searchQuery.toLowerCase().trim();
       const matchSearch =
         !q ||
         tx.title.toLowerCase().includes(q) ||
         tx.category.toLowerCase().includes(q) ||
+        (tx.familyContactName && tx.familyContactName.toLowerCase().includes(q)) ||
         (tx.notes && tx.notes.toLowerCase().includes(q));
 
       if (!matchSearch) return false;
 
       // Filter Type
-      if (activeFilter === 'expense' && (tx.type !== 'expense' || tx.isAppaReimbursable)) return false;
+      if (activeFilter === 'expense' && (tx.type !== 'expense' || tx.isFamilyReimbursable || tx.isAppaReimbursable)) {
+        return false;
+      }
       if (activeFilter === 'income' && tx.type !== 'income') return false;
-      if (activeFilter === 'appa' && !tx.isAppaReimbursable && tx.type !== 'repayment') return false;
+      if (activeFilter === 'family' && !tx.isFamilyReimbursable && !tx.isAppaReimbursable && tx.type !== 'repayment') {
+        return false;
+      }
+      if (activeFilter === 'repayment' && tx.type !== 'repayment') return false;
       if (activeFilter === 'freelance' && tx.category !== 'Freelance' && !tx.freelanceJobId) return false;
 
-      // Month
-      if (selectedMonth !== 'all') {
-        const txMonth = tx.date.substring(0, 7); // YYYY-MM
-        if (txMonth !== selectedMonth) return false;
+      // Filter by Specific Family Member
+      if (selectedMember !== 'all') {
+        const contactId = tx.familyContactId || (tx.isAppaReimbursable ? 'family-appa' : '');
+        if (contactId !== selectedMember) return false;
       }
 
       return true;
     });
-  }, [transactions, searchQuery, activeFilter, selectedMonth]);
+  }, [transactions, searchQuery, activeFilter, selectedMember]);
 
   // Group by date
   const groupedByDate = useMemo(() => {
@@ -72,7 +79,7 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search Metro, Lunch, Appa, Poster..."
+            placeholder="Search Metro, Lunch, Appa, Amma, Poster..."
             className="w-full bg-transparent text-[13px] text-[#121c2a] placeholder:text-[#6d7a72] focus:outline-none"
           />
           {searchQuery && (
@@ -86,14 +93,20 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
           {[
             { id: 'all', label: 'All' },
-            { id: 'expense', label: 'Expenses' },
+            { id: 'expense', label: 'Personal' },
+            { id: 'family', label: 'Family Split' },
+            { id: 'repayment', label: 'Repayments' },
             { id: 'income', label: 'Income' },
-            { id: 'appa', label: 'Appa Split' },
             { id: 'freelance', label: 'Freelance' },
           ].map((f) => (
             <button
               key={f.id}
-              onClick={() => setActiveFilter(f.id as FilterType)}
+              onClick={() => {
+                setActiveFilter(f.id as FilterType);
+                if (f.id !== 'family' && f.id !== 'repayment') {
+                  setSelectedMember('all');
+                }
+              }}
               className={`px-3 py-1.5 rounded-full text-[11px] font-semibold whitespace-nowrap transition-all cursor-pointer ${
                 activeFilter === f.id
                   ? 'bg-[#006948] text-white shadow-xs'
@@ -104,6 +117,40 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
             </button>
           ))}
         </div>
+
+        {/* Family Member Sub-Filter when Family or All is selected */}
+        {(activeFilter === 'all' || activeFilter === 'family' || activeFilter === 'repayment') && (
+          <div className="flex items-center gap-1.5 overflow-x-auto pt-1 border-t border-[#dfe9fc]/50">
+            <span className="text-[10px] text-[#6d7a72] uppercase font-bold tracking-wider shrink-0 mr-1">
+              Member:
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedMember('all')}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold cursor-pointer ${
+                selectedMember === 'all'
+                  ? 'bg-[#006948] text-white'
+                  : 'bg-[#f8f9ff] text-[#3e4942] hover:bg-[#eff3ff]'
+              }`}
+            >
+              All
+            </button>
+            {activeContacts.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setSelectedMember(c.id)}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold cursor-pointer whitespace-nowrap ${
+                  selectedMember === c.id
+                    ? 'bg-[#006948] text-white'
+                    : 'bg-[#f8f9ff] text-[#3e4942] hover:bg-[#eff3ff]'
+                }`}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {isDemoDataLoaded && (
@@ -147,6 +194,8 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                 const visual = getTransactionIcon(tx);
                 const isNegative = tx.type === 'expense';
                 const isRepayment = tx.type === 'repayment';
+                const isReimbursable = tx.isFamilyReimbursable || tx.isAppaReimbursable;
+                const memberName = tx.familyContactName || (tx.isAppaReimbursable ? 'Appa' : '');
 
                 return (
                   <div
@@ -164,18 +213,31 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                       </div>
 
                       <div className="min-w-0 flex flex-col">
-                        <p className="text-[14px] font-semibold text-[#121c2a] truncate">
-                          {tx.title}
-                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-[14px] font-semibold text-[#121c2a] truncate">
+                            {tx.title}
+                          </p>
+                          {isReimbursable && memberName && (
+                            <span className="text-[9px] bg-[#ffdcc0] text-[#894d00] font-bold px-1.5 py-0.2 rounded-md shrink-0">
+                              {memberName}
+                            </span>
+                          )}
+                          {isRepayment && memberName && (
+                            <span className="text-[9px] bg-[#88f8c4]/50 text-[#006948] font-bold px-1.5 py-0.2 rounded-md shrink-0">
+                              {memberName}
+                            </span>
+                          )}
+                        </div>
+
                         <p
                           className={`text-[12px] truncate ${
-                            tx.isAppaReimbursable ? 'text-[#894d00] font-medium' : 'text-[#3e4942]'
+                            isReimbursable ? 'text-[#894d00] font-medium' : 'text-[#3e4942]'
                           }`}
                         >
-                          {tx.isAppaReimbursable
-                            ? 'Claimed to Appa'
-                            : tx.type === 'repayment'
-                            ? 'Family Reimbursement'
+                          {isReimbursable
+                            ? `Claimed to ${memberName || 'Family'}`
+                            : isRepayment
+                            ? `Settlement from ${memberName || 'Family'}`
                             : tx.type === 'income'
                             ? 'Freelance Payout'
                             : tx.category}
@@ -197,21 +259,23 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                         {isNegative ? `- ₹${tx.amount}` : `+ ₹${tx.amount}`}
                       </p>
 
-                      <span
-                        className={`text-[10px] font-medium ${
-                          tx.isAppaReimbursable
-                            ? 'text-[#894d00] font-semibold'
-                            : tx.type === 'income'
-                            ? 'text-[#006948] font-semibold'
-                            : 'text-[#3e4942]'
-                        }`}
-                      >
-                        {tx.isAppaReimbursable
-                          ? 'Reimbursable'
-                          : tx.paymentMethod === 'upi'
-                          ? 'UPI'
-                          : 'Cash'}
-                      </span>
+                      <div className="flex items-center justify-end gap-1">
+                        <span
+                          className={`text-[10px] font-medium ${
+                            isReimbursable
+                              ? 'text-[#894d00] font-semibold'
+                              : tx.type === 'income'
+                              ? 'text-[#006948] font-semibold'
+                              : 'text-[#3e4942]'
+                          }`}
+                        >
+                          {isReimbursable
+                            ? (tx.settlementStatus === 'settled' || tx.appaSettled ? 'Settled' : 'Pending')
+                            : tx.paymentMethod === 'upi'
+                            ? 'UPI'
+                            : 'Cash'}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 );

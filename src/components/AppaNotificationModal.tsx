@@ -1,62 +1,62 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { AppaNotificationData } from '../types';
+import { FamilyNotificationData } from '../types';
 import { formatDateLabel } from '../utils/categoryIcons';
+import {
+  buildExpenseWhatsAppMessage,
+  buildRepaymentWhatsAppMessage,
+  generateWhatsAppUrl,
+} from '../utils/familyMigration';
+import { normalizeWhatsAppNumber, formatPhoneNumberDisplay } from '../utils/phoneNormalizer';
 
-interface AppaNotificationModalProps {
-  data: AppaNotificationData | null;
+interface FamilyNotificationModalProps {
+  data: FamilyNotificationData | null;
   onClose: () => void;
 }
 
-export const AppaNotificationModal: React.FC<AppaNotificationModalProps> = ({
+export const FamilyNotificationModal: React.FC<FamilyNotificationModalProps> = ({
   data,
   onClose,
 }) => {
-  const { state, updateSettings } = useApp();
+  const { familyContacts, updateFamilyContact } = useApp();
   const [copied, setCopied] = useState(false);
   const [editingPhone, setEditingPhone] = useState(false);
-  const [phoneNumber, setPhoneNumber] = useState(state.settings.appaPhoneNumber || '+919876543210');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [phoneError, setPhoneError] = useState<string | null>(null);
+
+  const contact = familyContacts.find((c) => c.id === data?.contactId);
+
+  useEffect(() => {
+    if (data) {
+      setPhoneNumber(contact?.phoneNumber || data.phoneNumber || '');
+      setPhoneError(null);
+      setEditingPhone(false);
+      setCopied(false);
+    }
+  }, [data, contact?.phoneNumber]);
 
   if (!data) return null;
 
   const isExpense = data.type === 'expense';
   const formattedDate = formatDateLabel(data.date);
+  const contactName = data.contactName || contact?.name || 'Family Member';
 
-  // Clean phone number: remove non-digits
-  const cleanPhone = (phoneNumber || '').replace(/[^0-9]/g, '');
-
-  const buildExpenseMessage = () => {
-    return `Hi Appa 👋
-
-I paid for a college expense.
-
-Expense: ${data.title}
-Date: ${formattedDate}
-Amount paid: ₹${data.amount.toLocaleString('en-IN')}
-Previous balance: ₹${data.previousBalance.toLocaleString('en-IN')}
-New expense: ₹${data.amount.toLocaleString('en-IN')}
-Total amount to repay: ₹${data.updatedBalance.toLocaleString('en-IN')}
-
-Please settle it when convenient.
-
-— MSR Penny`;
-  };
-
-  const buildRepaymentMessage = () => {
-    const methodStr = (data.paymentMethod || 'UPI').toUpperCase();
-    return `Hi Appa 👋
-
-Received ₹${data.amount.toLocaleString('en-IN')} via ${methodStr}. Thank you!
-
-Previous balance: ₹${data.previousBalance.toLocaleString('en-IN')}
-Amount received: ₹${data.amount.toLocaleString('en-IN')}
-Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
-
-— MSR Penny`;
-  };
-
-  const messageText = isExpense ? buildExpenseMessage() : buildRepaymentMessage();
+  // Build the message strictly conforming to prompt specifications (Sections 18 & 19)
+  const messageText = isExpense
+    ? buildExpenseWhatsAppMessage({
+        contactName,
+        description: data.title,
+        date: formattedDate,
+        amount: data.amount,
+        previousBalance: data.previousBalance,
+        updatedBalance: data.updatedBalance,
+      })
+    : buildRepaymentWhatsAppMessage({
+        contactName,
+        repaymentAmount: data.amount,
+        previousBalance: data.previousBalance,
+        updatedBalance: data.updatedBalance,
+      });
 
   const handleCopyMessage = () => {
     navigator.clipboard?.writeText(messageText).catch(() => {});
@@ -65,25 +65,34 @@ Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
   };
 
   const handleSendWhatsApp = () => {
-    if (!cleanPhone || cleanPhone.length < 10) {
-      setPhoneError('Please enter a valid phone number with country code (e.g. +919876543210).');
+    const currentNumber = phoneNumber.trim() || contact?.phoneNumber || '';
+    const normalized = normalizeWhatsAppNumber(currentNumber);
+
+    if (!normalized || normalized.length < 10) {
+      setPhoneError(`Please enter a valid WhatsApp number with country code for ${contactName} (e.g. +919876543210).`);
       setEditingPhone(true);
       return;
     }
 
     setPhoneError(null);
-    const encodedMessage = encodeURIComponent(messageText);
-    const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodedMessage}`;
+    const whatsappUrl = generateWhatsAppUrl(normalized, messageText);
     window.open(whatsappUrl, '_blank');
   };
 
   const handleSavePhone = async () => {
-    if (!cleanPhone || cleanPhone.length < 10) {
+    const normalized = normalizeWhatsAppNumber(phoneNumber);
+    if (!normalized || normalized.length < 10) {
       setPhoneError('Please enter at least 10 digits including country code.');
       return;
     }
+
     setPhoneError(null);
-    await updateSettings({ appaPhoneNumber: phoneNumber.trim() });
+    if (contact) {
+      await updateFamilyContact({
+        ...contact,
+        phoneNumber: phoneNumber.trim(),
+      });
+    }
     setEditingPhone(false);
   };
 
@@ -103,7 +112,7 @@ Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
                 {isExpense ? 'Expense Confirmation' : 'Repayment Recorded'}
               </h3>
               <p className="text-[11px] text-[#3e4942]">
-                {isExpense ? 'Appa will repay you' : 'Settlement updated'}
+                {isExpense ? `${contactName} will repay you` : `Settlement with ${contactName} updated`}
               </p>
             </div>
           </div>
@@ -118,6 +127,13 @@ Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
 
         {/* Financial Breakdown Card */}
         <div className="bg-[#f8f9ff] rounded-2xl p-4 border border-[#dfe9fc]/70 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] font-medium text-[#3e4942]">Family Member</span>
+            <span className="text-[13px] font-bold text-[#006948]">
+              {contactName}
+            </span>
+          </div>
+
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-medium text-[#3e4942]">Description</span>
             <span className="text-[13px] font-semibold text-[#121c2a] truncate max-w-[180px]">
@@ -135,7 +151,7 @@ Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
               {isExpense ? 'Amount Paid' : 'Amount Received'}
             </span>
             <span className={`text-[14px] font-bold tabular-nums ${isExpense ? 'text-[#121c2a]' : 'text-[#006948]'}`}>
-              {isExpense ? `- ₹${data.amount.toLocaleString('en-IN')}` : `+ ₹${data.amount.toLocaleString('en-IN')}`}
+              {isExpense ? `₹${data.amount.toLocaleString('en-IN')}` : `₹${data.amount.toLocaleString('en-IN')}`}
             </span>
           </div>
 
@@ -171,10 +187,10 @@ Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
             <span className="material-symbols-outlined text-[#006948] text-[18px]">chat</span>
             <div>
               <span className="text-[10px] text-[#3e4942] block font-semibold uppercase tracking-wider">
-                Appa's WhatsApp
+                {contactName}'s WhatsApp
               </span>
               <span className="text-[12px] font-bold text-[#121c2a]">
-                {state.settings.appaPhoneNumber || 'Not set yet'}
+                {formatPhoneNumberDisplay(phoneNumber || contact?.phoneNumber)}
               </span>
             </div>
           </div>
@@ -191,7 +207,7 @@ Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
         {editingPhone && (
           <div className="space-y-1.5 p-3 bg-white border border-[#dfe9fc] rounded-xl shadow-xs">
             <label className="text-[10px] font-semibold text-[#3e4942] uppercase tracking-wider block">
-              Enter Appa's WhatsApp Number (with country code)
+              Enter {contactName}'s WhatsApp Number (with country code)
             </label>
             <div className="flex gap-2">
               <input
@@ -234,7 +250,7 @@ Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
             className="w-full h-12 rounded-xl bg-[#006948] hover:bg-[#00855d] active:scale-[0.98] text-white text-[14px] font-semibold flex items-center justify-center gap-2 shadow-[0_4px_14px_rgba(0,105,72,0.28)] transition-all cursor-pointer"
           >
             <span className="material-symbols-outlined text-[20px]">send</span>
-            <span>Send to Appa on WhatsApp</span>
+            <span>Send to {contactName} on WhatsApp</span>
           </button>
 
           {/* Secondary Copy Message Button */}
@@ -253,3 +269,6 @@ Updated remaining balance: ₹${data.updatedBalance.toLocaleString('en-IN')}
     </div>
   );
 };
+
+// Backwards-compatible alias export
+export const AppaNotificationModal = FamilyNotificationModal;

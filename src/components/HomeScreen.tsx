@@ -26,12 +26,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     totalIncome,
     incomeCount,
     currentMonthSpent,
+    totalFamilyOutstanding,
     appaOwesMe,
     monthlyBudget,
     budgetUsedPercent,
     budgetRemaining,
     daysRemainingInMonth,
     syncWithGoogleSheets,
+    refreshFromGoogleSheets,
     clearDemoData,
     isDemoDataLoaded,
   } = useApp();
@@ -55,13 +57,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const handleQuickSync = async () => {
     setIsSyncing(true);
     setSyncNotice(null);
-    const res = await syncWithGoogleSheets();
+    // Bidirectional sync: pulls from Google Sheets first, then pushes
+    const refreshRes = await refreshFromGoogleSheets();
+    let res = refreshRes;
+    if (refreshRes.success) {
+      res = await syncWithGoogleSheets();
+    }
     setIsSyncing(false);
     setSyncNotice({ text: res.message, success: res.success });
     setTimeout(() => {
       setSyncNotice(null);
     }, 5000);
   };
+
 
   return (
     <div className="flex flex-col w-full gap-4 pb-8">
@@ -157,22 +165,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
         </div>
 
-        {/* Appa Owes Me Card (Tappable to Appa Settlement) */}
+        {/* Family Owes Card (Tappable to Family Settlements) */}
         <button
           onClick={onNavigateToAppa}
           className="bg-[#eff3ff] active:bg-[#e6eeff] rounded-xl p-3 flex flex-col justify-between shadow-sm border border-[#dfe9fc]/80 transition-all group text-left cursor-pointer"
         >
           <div className="flex items-center justify-between w-full">
-            <span className="text-[11px] text-[#894d00] font-semibold truncate">Appa Owes</span>
+            <span className="text-[11px] text-[#894d00] font-semibold truncate">Family Owes</span>
             <span className="material-symbols-outlined text-[16px] text-[#894d00] group-hover:translate-x-0.5 transition-transform">
               arrow_forward
             </span>
           </div>
           <div className="mt-2">
             <p className="text-[17px] font-bold text-[#ac6200] tracking-tight tabular-nums">
-              ₹{appaOwesMe.toLocaleString('en-IN')}
+              ₹{totalFamilyOutstanding.toLocaleString('en-IN')}
             </p>
-            <span className="text-[10px] text-[#3e4942]">Pending split</span>
+            <span className="text-[10px] text-[#3e4942]">Family settlements</span>
           </div>
         </button>
       </div>

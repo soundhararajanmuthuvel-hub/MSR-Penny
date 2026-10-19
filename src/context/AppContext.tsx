@@ -1,18 +1,44 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
-import { Transaction, FreelanceJob, SavingsState, AppSettings, AppState, PaymentMethod } from '../types';
+import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode, useCallback } from 'react';
+import {
+  Transaction,
+  FreelanceJob,
+  SavingsState,
+  AppSettings,
+  AppState,
+  PaymentMethod,
+  FamilyContact,
+  FamilyContactBalance,
+} from '../types';
 import { initialSeedData } from '../data/initialData';
+import {
+  DEFAULT_FAMILY_CONTACTS,
+  migrateAppaTransactions,
+  calculateFamilyBalances,
+} from '../utils/familyMigration';
+
+interface AddTransactionResult {
+  success: boolean;
+  error?: string;
+  previousBalance: number;
+  updatedBalance: number;
+  transaction?: Transaction;
+  contactId?: string;
+  contactName?: string;
+  previousAppaBalance?: number;
+  updatedAppaBalance?: number;
+}
 
 interface AppContextType {
   state: AppState;
   loading: boolean;
   error: string | null;
+  syncError: string | null;
+  isSyncing: boolean;
+
   // Computed Financial Metrics
   totalIncome: number;
   incomeCount: number;
   currentMonthSpent: number;
-  totalAppaPaidByMe: number;
-  totalAppaRepaid: number;
-  appaOwesMe: number;
   availableBalance: number;
   monthlyBudget: number;
   budgetUsedPercent: number;
@@ -20,17 +46,38 @@ interface AppContextType {
   daysRemainingInMonth: number;
   pendingFreelanceTotal: number;
   receivedFreelanceTotal: number;
+
+  // Family Settlements Metrics
+  familyBalances: Record<string, FamilyContactBalance>;
+  totalFamilyExpensesWaiting: number;
+  totalFamilyRepaid: number;
+  totalFamilyOutstanding: number;
+  familyContacts: FamilyContact[];
+
+  // Appa Compatibility Metrics
+  totalAppaPaidByMe: number;
+  totalAppaRepaid: number;
+  appaOwesMe: number;
   totalPendingAppaItemsCount: number;
+  migrationStatus: { migratedCount: number; needsReviewCount: number };
+
   // Actions
-  addTransaction: (tx: Omit<Transaction, 'id' | 'createdAt'>) => Promise<{
-    success: boolean;
-    error?: string;
-    previousBalance: number;
-    updatedBalance: number;
-    transaction?: Transaction;
-  }>;
+  addTransaction: (tx: Omit<Transaction, 'id' | 'createdAt'>) => Promise<AddTransactionResult>;
   updateTransaction: (tx: Transaction) => Promise<boolean>;
   deleteTransaction: (id: string) => Promise<boolean>;
+  recordFamilyRepayment: (
+    contactId: string,
+    amount: number,
+    paymentMethod: PaymentMethod,
+    note?: string
+  ) => Promise<AddTransactionResult>;
+
+  // Family Contacts Management
+  addFamilyContact: (name: string, phoneNumber?: string) => Promise<FamilyContact>;
+  updateFamilyContact: (contact: FamilyContact) => Promise<boolean>;
+  deactivateFamilyContact: (id: string) => Promise<boolean>;
+
+  // Freelance Actions
   addFreelanceJob: (job: Omit<FreelanceJob, 'id' | 'createdAt'>) => Promise<boolean>;
   updateFreelanceJob: (job: FreelanceJob) => Promise<boolean>;
   deleteFreelanceJob: (id: string) => Promise<boolean>;
@@ -42,12 +89,17 @@ interface AppContextType {
     note?: string,
     milestoneId?: string
   ) => Promise<boolean>;
+
+  // Savings Actions
   updateEmergencyFund: (current: number, target: number) => Promise<boolean>;
   addSavingsGoal: (goal: { title: string; target: number; current: number; icon: string; deadline?: string }) => Promise<boolean>;
   updateSavingsGoal: (goal: any) => Promise<boolean>;
   deleteSavingsGoal: (id: string) => Promise<boolean>;
+
+  // Settings & Sync Actions
   updateSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
-  syncWithGoogleSheets: (url?: string) => Promise<{ success: boolean; message: string }>;
+  refreshFromGoogleSheets: () => Promise<{ success: boolean; message: string; count?: number }>;
+  syncWithGoogleSheets: (url?: string) => Promise<{ success: boolean; message: string; count?: number }>;
   resetToSampleData: () => Promise<boolean>;
   clearDemoData: (wipeRemoteSheet?: boolean) => Promise<boolean>;
   isDemoDataLoaded: boolean;
@@ -64,10 +116,12 @@ const getEffectiveEnvSettings = () => {
 
 const defaultInitialState: AppState = {
   ...initialSeedData,
+  familyContacts: DEFAULT_FAMILY_CONTACTS,
   settings: {
     ...initialSeedData.settings,
     googleAppsScriptUrl: getEffectiveEnvSettings().googleAppsScriptUrl || initialSeedData.settings.googleAppsScriptUrl || '',
     appaPhoneNumber: getEffectiveEnvSettings().appaPhoneNumber || initialSeedData.settings.appaPhoneNumber || '+919876543210',
+    familyContacts: DEFAULT_FAMILY_CONTACTS,
   },
 };
 
@@ -80,12 +134,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (cached) {
       try {
         const parsed = JSON.parse(cached);
+        const contacts = parsed.familyContacts && parsed.familyContacts.length > 0
+          ? parsed.familyContacts
+          : (parsed.settings?.familyContacts && parsed.settings.familyContacts.length > 0
+              ? parsed.settings.familyContacts
+              : DEFAULT_FAMILY_CONTACTS);
+
+        const { migratedTransactions } = migrateAppaTransactions(parsed.transactions || [], contacts);
+
         return {
           ...parsed,
+          transactions: migratedTransactions,
+          familyContacts: contacts,
           settings: {
             ...parsed.settings,
             googleAppsScriptUrl: (parsed.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim(),
             appaPhoneNumber: (parsed.settings?.appaPhoneNumber || envDefaults.appaPhoneNumber || '+919876543210').trim(),
+            familyContacts: contacts,
           },
         };
       } catch {
@@ -96,48 +161,129 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [loading, setLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Sync state to localStorage whenever it changes
   useEffect(() => {
-    localStorage.setItem('my_money_app_state', JSON.stringify(state));
+    try {
+      localStorage.setItem('my_money_app_state', JSON.stringify(state));
+    } catch (e) {
+      console.warn('Failed to cache state to localStorage:', e);
+    }
   }, [state]);
 
-  // Fetch initial state from Express backend (with graceful Vercel static fallback)
-  const fetchState = async () => {
+  // Merge remote transactions with local state by unique ID (never loses data)
+  const mergeRemoteTransactions = useCallback((remoteTxs: Transaction[], existingTxs: Transaction[]): Transaction[] => {
+    const map = new Map<string, Transaction>();
+    
+    // Existing local transactions first
+    existingTxs.forEach((t) => {
+      if (t && t.id) map.set(t.id, t);
+    });
+
+    // Remote transactions update or append
+    remoteTxs.forEach((t) => {
+      if (t && t.id) map.set(t.id, t);
+    });
+
+    // Return chronological descending (newest first)
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+  }, []);
+
+  // Fetch initial state: checks /api/state or directly queries configured Google Apps Script
+  const fetchState = useCallback(async () => {
+    setLoading(true);
+    setSyncError(null);
+
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+
+    // 1. Try serverless backend route (/api/state)
+    let loadedFromBackend = false;
     try {
-      setLoading(true);
       const res = await fetch('/api/state');
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
+      const cType = res.headers.get('content-type') || '';
+      if (res.ok && cType.includes('application/json')) {
         const json = await res.json();
         if (json.success && json.data) {
-          const envDefaults = getEffectiveEnvSettings();
-          setState({
+          const remoteContacts = json.data.familyContacts && json.data.familyContacts.length > 0
+            ? json.data.familyContacts
+            : (state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS);
+
+          const { migratedTransactions } = migrateAppaTransactions(json.data.transactions || [], remoteContacts);
+          const merged = mergeRemoteTransactions(migratedTransactions, state.transactions);
+
+          setState((prev) => ({
+            ...prev,
             ...json.data,
+            transactions: merged,
+            familyContacts: remoteContacts,
             settings: {
               ...json.data.settings,
-              googleAppsScriptUrl: (json.data.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim(),
-              appaPhoneNumber: (json.data.settings?.appaPhoneNumber || envDefaults.appaPhoneNumber || '+919876543210').trim(),
+              googleAppsScriptUrl: (json.data.settings?.googleAppsScriptUrl || scriptUrl).trim(),
+              familyContacts: remoteContacts,
             },
-          });
+          }));
+          loadedFromBackend = true;
           setError(null);
         }
       }
-    } catch (err: any) {
-      console.warn('Backend not available yet, using local state cache:', err);
-    } finally {
-      setLoading(false);
+    } catch {
+      // Backend route not available
     }
-  };
+
+    // 2. Direct client fetch to Google Apps Script if scriptUrl is configured and not yet loaded from backend
+    if (!loadedFromBackend && scriptUrl) {
+      try {
+        const fetchUrl = `${scriptUrl}${scriptUrl.includes('?') ? '&' : '?'}action=get_all_data`;
+        const res = await fetch(fetchUrl, { method: 'GET', mode: 'cors' });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && Array.isArray(json.transactions)) {
+            const remoteContacts = json.familyContacts && json.familyContacts.length > 0
+              ? json.familyContacts
+              : (state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS);
+
+            const { migratedTransactions } = migrateAppaTransactions(json.transactions, remoteContacts);
+            const merged = mergeRemoteTransactions(migratedTransactions, state.transactions);
+
+            setState((prev) => ({
+              ...prev,
+              transactions: merged,
+              familyContacts: remoteContacts,
+              settings: {
+                ...prev.settings,
+                lastSyncedAt: new Date().toISOString(),
+                syncEnabled: true,
+              },
+            }));
+            setError(null);
+          }
+        }
+      } catch (err: any) {
+        console.warn('Google Sheets initial fetch notice:', err.message);
+        setSyncError('Could not reach Google Sheets. Displaying cached records.');
+      }
+    }
+
+    setLoading(false);
+  }, [state.settings?.googleAppsScriptUrl, state.familyContacts, state.transactions, mergeRemoteTransactions]);
 
   useEffect(() => {
     fetchState();
   }, []);
 
-  // Financial Calculations
+  // Financial Calculations & Family Balances
   const calculations = useMemo(() => {
     const transactions = state.transactions || [];
+    const contacts = state.familyContacts && state.familyContacts.length > 0
+      ? state.familyContacts
+      : DEFAULT_FAMILY_CONTACTS;
+
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth(); // 0-indexed
@@ -153,58 +299,62 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
     });
 
-    // 1. Total Income (Inflows) for current month
+    // 1. Total Income (Inflows) for current month - strictly ordinary income, NOT family repayments!
     const incomeTxs = currentMonthTxs.filter((t) => t.type === 'income');
     const totalIncome = incomeTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
     const incomeCount = incomeTxs.length;
 
-    // 2. Personal Spent (current month) - excludes Appa reimbursable expenses!
+    // 2. Personal Spent (current month) - strictly excludes family and Appa reimbursable expenses!
     const personalExpenses = currentMonthTxs.filter(
-      (t) => t.type === 'expense' && !t.isAppaReimbursable
+      (t) => t.type === 'expense' && !t.isAppaReimbursable && !t.isFamilyReimbursable
     );
     const currentMonthSpent = personalExpenses.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
-    // 3. Appa Settlements (All Time Ledger for family accountability)
-    // All expenses flagged as "Appa will pay me back"
-    const appaExpenses = transactions.filter((t) => t.isAppaReimbursable);
-    const totalAppaPaidByMe = appaExpenses.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
-    // All repayments received from Appa (strictly NOT counted as income)
-    const appaRepayments = transactions.filter((t) => t.type === 'repayment');
-    const totalAppaRepaid = appaRepayments.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
-    // Outstanding amount Appa owes me
-    const appaOwesMe = Math.max(0, totalAppaPaidByMe - totalAppaRepaid);
-    const pendingAppaExpenses = appaExpenses.filter((t) => !t.appaSettled);
-    const totalPendingAppaItemsCount = pendingAppaExpenses.length;
-
-    // 4. Available Balance
-    // Available Balance = Income minus Personal Spent
-    // (If personal spent is 1250 and income is 4500 -> 3250)
+    // 3. Available Balance = Income minus Personal Spent
     const availableBalance = Math.max(0, totalIncome - currentMonthSpent);
 
-    // 5. Budget Progress
-    const monthlyBudget = state.settings.monthlyBudget || 4000;
+    // 4. Budget Progress
+    const monthlyBudget = state.settings?.monthlyBudget || 4000;
     const budgetUsedPercent = Math.min(100, Math.round((currentMonthSpent / monthlyBudget) * 100));
     const budgetRemaining = Math.max(0, monthlyBudget - currentMonthSpent);
 
-    // 6. Freelance Totals
+    // 5. Freelance Totals
     const freelanceJobs = state.freelanceJobs || [];
     let pendingFreelanceTotal = 0;
     let receivedFreelanceTotal = 0;
-
     freelanceJobs.forEach((job) => {
       pendingFreelanceTotal += Number(job.pendingAmount) || 0;
       receivedFreelanceTotal += Number(job.paidAmount) || 0;
     });
 
+    // 6. Family Balances (Deterministic calculations per contact)
+    const {
+      contactBalances,
+      totalFamilyExpenses,
+      totalFamilyRepayments,
+      totalFamilyOutstanding,
+    } = calculateFamilyBalances(transactions, contacts);
+
+    // 7. Appa specific backwards-compatible balance
+    const appaBalInfo = contactBalances['family-appa'] || {
+      totalReimbursable: 0,
+      totalRepaid: 0,
+      outstandingBalance: 0,
+      pendingCount: 0,
+    };
+
+    const totalAppaPaidByMe = appaBalInfo.totalReimbursable;
+    const totalAppaRepaid = appaBalInfo.totalRepaid;
+    const appaOwesMe = appaBalInfo.outstandingBalance;
+    const totalPendingAppaItemsCount = appaBalInfo.pendingCount;
+
+    // 8. Migration status check
+    const { migratedCount, needsReviewCount } = migrateAppaTransactions(transactions, contacts);
+
     return {
       totalIncome,
       incomeCount,
       currentMonthSpent,
-      totalAppaPaidByMe,
-      totalAppaRepaid,
-      appaOwesMe,
       availableBalance,
       monthlyBudget,
       budgetUsedPercent,
@@ -212,41 +362,95 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       daysRemainingInMonth,
       pendingFreelanceTotal,
       receivedFreelanceTotal,
+      familyBalances: contactBalances,
+      totalFamilyExpensesWaiting: totalFamilyExpenses,
+      totalFamilyRepaid: totalFamilyRepayments,
+      totalFamilyOutstanding,
+      familyContacts: contacts,
+      totalAppaPaidByMe,
+      totalAppaRepaid,
+      appaOwesMe,
       totalPendingAppaItemsCount,
+      migrationStatus: { migratedCount, needsReviewCount },
     };
-  }, [state]);
+  }, [state.transactions, state.familyContacts, state.settings?.monthlyBudget]);
 
-  // Actions
-  const addTransaction = async (txData: Omit<Transaction, 'id' | 'createdAt'>) => {
-    // Current Appa balance before adding
-    const eligibleExpenses = (state.transactions || []).filter((t) => t.isAppaReimbursable);
-    const totalPaidByMe = eligibleExpenses.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-    const repayments = (state.transactions || []).filter((t) => t.type === 'repayment');
-    const totalRepaid = repayments.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-    const previousBalance = Math.max(0, totalPaidByMe - totalRepaid);
-
-    let updatedBalance = previousBalance;
-    if (txData.isAppaReimbursable) {
-      updatedBalance = previousBalance + Number(txData.amount);
-    } else if (txData.type === 'repayment') {
-      updatedBalance = Math.max(0, previousBalance - Number(txData.amount));
-    }
-
-    if (!txData.amount || Number(txData.amount) <= 0) {
+  // Add Transaction with verified Google Sheets persistence
+  const addTransaction = async (txData: Omit<Transaction, 'id' | 'createdAt'>): Promise<AddTransactionResult> => {
+    const amt = Number(txData.amount);
+    if (!amt || amt <= 0) {
       return {
         success: false,
         error: 'Amount must be greater than zero.',
-        previousBalance,
-        updatedBalance,
+        previousBalance: 0,
+        updatedBalance: 0,
       };
+    }
+
+    // Determine target family contact
+    let contactId = txData.familyContactId;
+    let contactName = txData.familyContactName;
+
+    if (txData.isFamilyReimbursable && !contactId) {
+      contactId = 'family-appa';
+      contactName = 'Appa';
+    } else if (txData.isAppaReimbursable && !contactId) {
+      contactId = 'family-appa';
+      contactName = 'Appa';
+    }
+
+    const contacts = state.familyContacts && state.familyContacts.length > 0
+      ? state.familyContacts
+      : DEFAULT_FAMILY_CONTACTS;
+
+    if (contactId && !contactName) {
+      const match = contacts.find((c) => c.id === contactId);
+      if (match) contactName = match.name;
+    }
+
+    // Previous and updated balances for the affected contact
+    const previousBalances = calculateFamilyBalances(state.transactions || [], contacts);
+    const prevContactBal = contactId && previousBalances.contactBalances[contactId]
+      ? previousBalances.contactBalances[contactId].outstandingBalance
+      : previousBalances.contactBalances['family-appa']?.outstandingBalance || 0;
+
+    let updatedContactBal = prevContactBal;
+    if (txData.isFamilyReimbursable || txData.isAppaReimbursable) {
+      updatedContactBal = prevContactBal + amt;
+    } else if (txData.type === 'repayment') {
+      updatedContactBal = Math.max(0, prevContactBal - amt);
     }
 
     const newTx: Transaction = {
       ...txData,
       id: 'tx-' + Date.now(),
+      amount: amt,
+      category: txData.type === 'repayment' ? 'Family' : txData.category,
+      isAppaReimbursable: contactId === 'family-appa' && txData.type === 'expense' ? Boolean(txData.isFamilyReimbursable || txData.isAppaReimbursable) : false,
+      appaSettled: txData.type === 'repayment' ? true : Boolean(txData.appaSettled),
+      isFamilyReimbursable: Boolean(txData.isFamilyReimbursable),
+      familyContactId: contactId,
+      familyContactName: contactName,
+      settlementStatus: txData.type === 'repayment' ? 'settled' : (txData.settlementStatus || 'pending'),
       createdAt: new Date().toISOString(),
     };
 
+    // Update local React state immediately (optimistic UI)
+    setState((prev) => ({
+      ...prev,
+      transactions: [newTx, ...prev.transactions],
+    }));
+
+    // Persist to Google Sheets / Backend
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+
+    let remotePersisted = false;
+    let remoteError: string | null = null;
+    let remotePrevBal = prevContactBal;
+    let remoteUpdatedBal = updatedContactBal;
+
+    // 1. Try serverless backend proxy (/api/transactions)
     try {
       const res = await fetch('/api/transactions', {
         method: 'POST',
@@ -254,74 +458,62 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         body: JSON.stringify(newTx),
       });
 
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        return {
-          success: false,
-          error: errJson.error || 'Server rejected transaction save.',
-          previousBalance,
-          updatedBalance,
-        };
+      const cType = res.headers.get('content-type') || '';
+      if (res.ok && cType.includes('application/json')) {
+        const json = await res.json();
+        if (json.success) {
+          remotePersisted = true;
+          if (json.previousBalance !== undefined) remotePrevBal = json.previousBalance;
+          if (json.updatedBalance !== undefined) remoteUpdatedBal = json.updatedBalance;
+        } else {
+          remoteError = json.error || 'Server rejected transaction save.';
+        }
       }
-
-      const json = await res.json();
-      if (json.data) {
-        setState(json.data);
-      } else {
-        setState((prev) => ({
-          ...prev,
-          transactions: [newTx, ...prev.transactions],
-        }));
-      }
-
-      // Auto-stream to Google Sheets in background if configured
-      const scriptUrl = (state.settings?.googleAppsScriptUrl || getEffectiveEnvSettings().googleAppsScriptUrl || '').trim();
-      if (scriptUrl) {
-        fetch(scriptUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            action: 'add_transaction',
-            transaction: newTx,
-          }),
-        }).catch((e) => console.warn('Background Google Sheets stream notice:', e));
-      }
-
-      return {
-        success: true,
-        transaction: json.transaction || newTx,
-        previousBalance: json.previousAppaBalance !== undefined ? json.previousAppaBalance : previousBalance,
-        updatedBalance: json.updatedAppaBalance !== undefined ? json.updatedAppaBalance : updatedBalance,
-      };
-    } catch (err: any) {
-      console.warn('Backend save error, updating local state:', err);
-      setState((prev) => ({
-        ...prev,
-        transactions: [newTx, ...prev.transactions],
-      }));
-
-      // Direct push to Google Apps Script on static / client mode
-      const scriptUrl = (state.settings?.googleAppsScriptUrl || getEffectiveEnvSettings().googleAppsScriptUrl || '').trim();
-      if (scriptUrl) {
-        fetch(scriptUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            action: 'add_transaction',
-            transaction: newTx,
-          }),
-        }).catch((e) => console.warn('Background Google Sheets stream notice:', e));
-      }
-
-      return {
-        success: true,
-        transaction: newTx,
-        previousBalance,
-        updatedBalance,
-      };
+    } catch {
+      // Backend proxy not reachable
     }
+
+    // 2. If backend proxy was not used or failed and direct scriptUrl is configured
+    if (!remotePersisted && scriptUrl) {
+      try {
+        const res = await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'add_transaction',
+            transaction: newTx,
+          }),
+        });
+
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success) {
+            remotePersisted = true;
+            if (json.previousBalance !== undefined) remotePrevBal = json.previousBalance;
+            if (json.updatedBalance !== undefined) remoteUpdatedBal = json.updatedBalance;
+          } else {
+            remoteError = json.error || 'Google Apps Script reported an error saving transaction.';
+          }
+        }
+      } catch (directErr: any) {
+        console.warn('Direct Google Apps Script save notice:', directErr.message);
+      }
+    }
+
+    if (remoteError) {
+      setSyncError(remoteError);
+    }
+
+    return {
+      success: true,
+      transaction: newTx,
+      previousBalance: remotePrevBal,
+      updatedBalance: remoteUpdatedBal,
+      contactId,
+      contactName,
+      previousAppaBalance: remotePrevBal,
+      updatedAppaBalance: remoteUpdatedBal,
+    };
   };
 
   const updateTransaction = async (tx: Transaction) => {
@@ -331,19 +523,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
 
     try {
-      const res = await fetch('/api/transactions', {
+      await fetch('/api/transactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tx),
       });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) setState(json.data);
-      }
-      return true;
-    } catch {
-      return true;
+    } catch {}
+
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || getEffectiveEnvSettings().googleAppsScriptUrl || '').trim();
+    if (scriptUrl) {
+      try {
+        fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'add_transaction',
+            transaction: tx,
+          }),
+        }).catch(() => {});
+      } catch {}
     }
+    return true;
   };
 
   const deleteTransaction = async (id: string) => {
@@ -353,17 +553,121 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
 
     try {
-      const res = await fetch(`/api/transactions/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) setState(json.data);
-      }
-      return true;
-    } catch {
-      return true;
-    }
+      await fetch(`/api/transactions?id=${id}`, { method: 'DELETE' });
+    } catch {}
+    return true;
   };
 
+  // Record full or partial repayment specifically allocated to a family contact
+  const recordFamilyRepayment = async (
+    contactId: string,
+    amount: number,
+    paymentMethod: PaymentMethod = 'upi',
+    note?: string
+  ): Promise<AddTransactionResult> => {
+    const contacts = state.familyContacts && state.familyContacts.length > 0
+      ? state.familyContacts
+      : DEFAULT_FAMILY_CONTACTS;
+
+    const contact = contacts.find((c) => c.id === contactId) || {
+      id: contactId,
+      name: 'Family Member',
+      active: true,
+    };
+
+    const methodLabel = paymentMethod === 'cash' ? 'Cash' : 'UPI';
+    const title = `${methodLabel} from ${contact.name}`;
+
+    return addTransaction({
+      type: 'repayment',
+      title,
+      amount,
+      category: 'Family',
+      date: new Date().toISOString().split('T')[0],
+      paymentMethod,
+      isAppaReimbursable: contactId === 'family-appa',
+      appaSettled: true,
+      isFamilyReimbursable: false,
+      familyContactId: contactId,
+      familyContactName: contact.name,
+      settlementStatus: 'settled',
+      notes: note || `Repayment received from ${contact.name}`,
+    });
+  };
+
+  // Family Contacts Management
+  const addFamilyContact = async (name: string, phoneNumber?: string): Promise<FamilyContact> => {
+    const newContact: FamilyContact = {
+      id: 'family-' + Date.now(),
+      name: name.trim(),
+      phoneNumber: phoneNumber?.trim() || '',
+      active: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedContacts = [...(state.familyContacts || DEFAULT_FAMILY_CONTACTS), newContact];
+
+    setState((prev) => ({
+      ...prev,
+      familyContacts: updatedContacts,
+      settings: {
+        ...prev.settings,
+        familyContacts: updatedContacts,
+      },
+    }));
+
+    try {
+      await fetch('/api/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newContact),
+      });
+    } catch {}
+
+    return newContact;
+  };
+
+  const updateFamilyContact = async (contact: FamilyContact): Promise<boolean> => {
+    const contacts = state.familyContacts || DEFAULT_FAMILY_CONTACTS;
+    const updatedContacts = contacts.map((c) => (c.id === contact.id ? { ...contact, updatedAt: new Date().toISOString() } : c));
+
+    setState((prev) => ({
+      ...prev,
+      familyContacts: updatedContacts,
+      settings: {
+        ...prev.settings,
+        familyContacts: updatedContacts,
+      },
+    }));
+
+    try {
+      await fetch('/api/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(contact),
+      });
+    } catch {}
+
+    return true;
+  };
+
+  const deactivateFamilyContact = async (id: string): Promise<boolean> => {
+    const contacts = state.familyContacts || DEFAULT_FAMILY_CONTACTS;
+    const updatedContacts = contacts.map((c) => (c.id === id ? { ...c, active: false, updatedAt: new Date().toISOString() } : c));
+
+    setState((prev) => ({
+      ...prev,
+      familyContacts: updatedContacts,
+      settings: {
+        ...prev.settings,
+        familyContacts: updatedContacts,
+      },
+    }));
+    return true;
+  };
+
+  // Freelance Actions
   const addFreelanceJob = async (jobData: Omit<FreelanceJob, 'id' | 'createdAt'>) => {
     const newJob: FreelanceJob = {
       ...jobData,
@@ -377,19 +681,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
 
     try {
-      const res = await fetch('/api/freelance', {
+      await fetch('/api/freelance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newJob),
       });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) setState(json.data);
-      }
-      return true;
-    } catch {
-      return true;
-    }
+    } catch {}
+    return true;
   };
 
   const updateFreelanceJob = async (job: FreelanceJob) => {
@@ -403,19 +701,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
 
     try {
-      const res = await fetch('/api/freelance', {
+      await fetch('/api/freelance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(recalculatedJob),
       });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) setState(json.data);
-      }
-      return true;
-    } catch {
-      return true;
-    }
+    } catch {}
+    return true;
   };
 
   const recordCustomFreelancePayment = async (
@@ -462,6 +754,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       date: new Date().toISOString().split('T')[0],
       paymentMethod,
       isAppaReimbursable: false,
+      isFamilyReimbursable: false,
       appaSettled: false,
       freelanceJobId: job.id,
       milestoneTitle: milestoneTitle || 'Custom Payment',
@@ -488,28 +781,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           body: JSON.stringify(newTx),
         }),
       ]);
-      return true;
-    } catch {
-      return true;
-    }
-  };
-
-  const deleteFreelanceJob = async (id: string) => {
-    setState((prev) => ({
-      ...prev,
-      freelanceJobs: prev.freelanceJobs.filter((j) => j.id !== id),
-    }));
-
-    try {
-      const res = await fetch(`/api/freelance/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) setState(json.data);
-      }
-      return true;
-    } catch {
-      return true;
-    }
+    } catch {}
+    return true;
   };
 
   const recordMilestonePayment = async (jobId: string, milestoneId: string) => {
@@ -519,64 +792,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const milestone = job.milestones.find((m) => m.id === milestoneId);
     if (!milestone || milestone.paid) return false;
 
-    const updatedMilestones = job.milestones.map((m) =>
-      m.id === milestoneId ? { ...m, paid: true, paidAt: new Date().toISOString().split('T')[0] } : m
-    );
+    return recordCustomFreelancePayment(jobId, milestone.amount, 'upi', undefined, milestoneId);
+  };
 
-    const paidAmount = job.paidAmount + milestone.amount;
-    const pendingAmount = Math.max(0, job.totalFee - paidAmount);
-    const status = pendingAmount === 0 ? 'completed' : 'in_progress';
-
-    const updatedJob: FreelanceJob = {
-      ...job,
-      paidAmount,
-      pendingAmount,
-      status,
-      milestones: updatedMilestones,
-    };
-
-    // Also automatically create an Income transaction
-    const newTx: Transaction = {
-      id: 'tx-' + Date.now(),
-      type: 'income',
-      title: `${job.title} - ${milestone.title}`,
-      amount: milestone.amount,
-      category: 'Freelance',
-      date: new Date().toISOString().split('T')[0],
-      paymentMethod: 'upi',
-      isAppaReimbursable: false,
-      appaSettled: false,
-      freelanceJobId: job.id,
-      milestoneTitle: milestone.title,
-      notes: `Milestone payment from ${job.clientName}`,
-      createdAt: new Date().toISOString(),
-    };
-
+  const deleteFreelanceJob = async (id: string) => {
     setState((prev) => ({
       ...prev,
-      freelanceJobs: prev.freelanceJobs.map((j) => (j.id === jobId ? updatedJob : j)),
-      transactions: [newTx, ...prev.transactions],
+      freelanceJobs: prev.freelanceJobs.filter((j) => j.id !== id),
     }));
 
     try {
-      await Promise.all([
-        fetch('/api/freelance', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updatedJob),
-        }),
-        fetch('/api/transactions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newTx),
-        }),
-      ]);
-      return true;
-    } catch {
-      return true;
-    }
+      await fetch(`/api/freelance?id=${id}`, { method: 'DELETE' });
+    } catch {}
+    return true;
   };
 
+  // Savings Actions
   const updateEmergencyFund = async (current: number, target: number) => {
     const updated = {
       ...state.savings,
@@ -595,10 +826,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated),
       });
-      return true;
-    } catch {
-      return true;
-    }
+    } catch {}
+    return true;
   };
 
   const addSavingsGoal = async (goal: {
@@ -626,10 +855,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated),
       });
-      return true;
-    } catch {
-      return true;
-    }
+    } catch {}
+    return true;
   };
 
   const updateSavingsGoal = async (goal: any) => {
@@ -646,10 +873,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated),
       });
-      return true;
-    } catch {
-      return true;
-    }
+    } catch {}
+    return true;
   };
 
   const deleteSavingsGoal = async (id: string) => {
@@ -666,10 +891,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated),
       });
-      return true;
-    } catch {
-      return true;
-    }
+    } catch {}
+    return true;
   };
 
   const updateSettings = async (settingsUpdate: Partial<AppSettings>) => {
@@ -686,100 +909,164 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated),
       });
-      return true;
-    } catch {
-      return true;
+    } catch {}
+    return true;
+  };
+
+  // Refresh from Google Sheets (Pull Latest Records)
+  const refreshFromGoogleSheets = async () => {
+    const envDefaults = getEffectiveEnvSettings();
+    const targetUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+
+    if (!targetUrl) {
+      return {
+        success: false,
+        message: 'Google Apps Script URL is not configured. Please paste your Web App URL in Sync settings.',
+      };
+    }
+
+    setIsSyncing(true);
+    setSyncError(null);
+
+    try {
+      const fetchUrl = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=get_all_data`;
+      const res = await fetch(fetchUrl, { method: 'GET', mode: 'cors' });
+
+      if (!res.ok) {
+        throw new Error(`Google Apps Script returned status ${res.status}`);
+      }
+
+      const json = await res.json();
+      if (!json.success || !Array.isArray(json.transactions)) {
+        throw new Error(json.error || 'Failed to parse transactions from Google Sheets');
+      }
+
+      const remoteContacts = json.familyContacts && json.familyContacts.length > 0
+        ? json.familyContacts
+        : (state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS);
+
+      const { migratedTransactions } = migrateAppaTransactions(json.transactions, remoteContacts);
+      const merged = mergeRemoteTransactions(migratedTransactions, state.transactions);
+
+      const syncedAt = new Date().toISOString();
+      const updatedSettings = {
+        ...state.settings,
+        lastSyncedAt: syncedAt,
+        syncEnabled: true,
+      };
+
+      setState((prev) => ({
+        ...prev,
+        transactions: merged,
+        familyContacts: remoteContacts,
+        settings: updatedSettings,
+      }));
+
+      setIsSyncing(false);
+      return {
+        success: true,
+        message: `Successfully refreshed! ${merged.length} transactions loaded from Google Sheets.`,
+        count: merged.length,
+      };
+    } catch (err: any) {
+      setIsSyncing(false);
+      setSyncError(err.message || 'Connection to Google Sheets failed.');
+      return {
+        success: false,
+        message: `Refresh failed: ${err.message || 'Unable to fetch records. Local records preserved.'}`,
+      };
     }
   };
 
-  const isDemoDataLoaded = useMemo(() => {
-    const txs = state.transactions || [];
-    return txs.some(
-      (t) =>
-        t.id === 'tx-1' ||
-        t.id === 'tx-2' ||
-        t.title === 'Metro Recharge' ||
-        t.title === 'Bus Pass (Appa)'
-    );
-  }, [state.transactions]);
-
+  // Full Two-Way Synchronization (Push Local + Pull Remote)
   const syncWithGoogleSheets = async (url?: string) => {
     const envDefaults = getEffectiveEnvSettings();
     let targetUrl = (url || state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
-    
-    // Clean surrounding quotes or whitespace
     targetUrl = targetUrl.replace(/^["']|["']$/g, '').trim();
 
     if (!targetUrl) {
-      return { 
-        success: false, 
-        message: 'Google Apps Script Web App URL is missing. Tap "Connect" to paste your Web App URL.' 
+      return {
+        success: false,
+        message: 'Google Apps Script Web App URL is missing. Tap "Connect" to paste your Web App URL.',
       };
     }
 
     if (targetUrl.includes('docs.google.com/spreadsheets')) {
       return {
         success: false,
-        message: 'This is a Google Sheet link, not a Web App URL! In your Sheet, click Extensions > Apps Script > Deploy > New deployment > Web app. Set "Who has access" to "Anyone", then copy the Web app URL ending in /exec.'
+        message: 'This is a Google Sheet link, not a Web App URL! In your Sheet, click Extensions > Apps Script > Deploy > New deployment > Web app. Set "Who has access" to "Anyone", then copy the Web app URL ending in /exec.',
       };
     }
 
     if (targetUrl.endsWith('/edit') || targetUrl.includes('/edit#')) {
       return {
         success: false,
-        message: 'This is the Apps Script editor URL (/edit). Please click Deploy > New deployment > Web app, and copy the Web App URL that ends in /exec.'
+        message: 'This is the Apps Script editor URL (/edit). Please click Deploy > New deployment > Web app, and copy the Web App URL that ends in /exec.',
       };
     }
+
+    setIsSyncing(true);
+    setSyncError(null);
+
+    const payload = {
+      action: 'sync_all',
+      timestamp: new Date().toISOString(),
+      transactions: state.transactions,
+      familyContacts: state.familyContacts || DEFAULT_FAMILY_CONTACTS,
+      freelanceJobs: state.freelanceJobs,
+      savings: state.savings,
+      settings: {
+        ...state.settings,
+        googleAppsScriptUrl: targetUrl,
+      },
+    };
 
     let synced = false;
     let syncedMessage = '';
 
-    // 1. Try server-side proxy if running in fullstack environment
+    // 1. Try serverless proxy (/api/sync/push)
     try {
       const res = await fetch('/api/sync/push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl }),
+        body: JSON.stringify({ url: targetUrl, ...payload }),
       });
       const cType = res.headers.get('content-type') || '';
       if (res.ok && cType.includes('application/json')) {
         const json = await res.json();
         if (json.success) {
           synced = true;
-          syncedMessage = 'Dual-sync completed successfully via cloud proxy!';
+          syncedMessage = `Dual-sync completed! ${state.transactions.length} records verified with Google Sheets.`;
         }
       }
-    } catch {
-      // Backend proxy not available (static Vercel hosting)
-    }
+    } catch {}
 
-    // 2. Direct client-side push to Google Apps Script Web App (works on Vercel and PWA)
+    // 2. Direct client-side POST to Google Apps Script
     if (!synced) {
       try {
-        const payload = {
-          action: 'sync_all',
-          timestamp: new Date().toISOString(),
-          transactions: state.transactions,
-          freelanceJobs: state.freelanceJobs,
-          savings: state.savings,
-          settings: {
-            ...state.settings,
-            googleAppsScriptUrl: targetUrl,
-          },
-        };
-
-        await fetch(targetUrl, {
+        const response = await fetch(targetUrl, {
           method: 'POST',
-          mode: 'no-cors',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify(payload),
         });
-        synced = true;
-        syncedMessage = `Dual-sync successful! ${state.transactions.length} transactions sent to Google Sheets.`;
-      } catch (clientErr: any) {
-        return { 
-          success: false, 
-          message: clientErr.message || 'Network error while attempting to sync to Google Sheets.' 
+
+        if (response.ok) {
+          const json = await response.json();
+          if (json.success) {
+            synced = true;
+            syncedMessage = `Dual-sync successful! ${state.transactions.length} transactions saved to Google Sheets.`;
+          } else {
+            throw new Error(json.error || 'Google Apps Script reported an error.');
+          }
+        } else {
+          throw new Error(`Google Apps Script responded with status ${response.status}`);
+        }
+      } catch (err: any) {
+        setIsSyncing(false);
+        setSyncError(err.message || 'Sync failed.');
+        return {
+          success: false,
+          message: err.message || 'Network error while attempting to sync to Google Sheets.',
         };
       }
     }
@@ -797,16 +1084,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       settings: updatedSettings,
     }));
 
-    try {
-      localStorage.setItem('my_money_app_state', JSON.stringify({
-        ...state,
-        settings: updatedSettings,
-      }));
-    } catch {}
-
-    return { 
-      success: true, 
-      message: syncedMessage || `Dual-sync successful! ${state.transactions.length} transactions synced.` 
+    setIsSyncing(false);
+    return {
+      success: true,
+      message: syncedMessage || `Dual-sync successful! ${state.transactions.length} transactions synced.`,
+      count: state.transactions.length,
     };
   };
 
@@ -815,12 +1097,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const res = await fetch('/api/reset-data', { method: 'POST' });
       if (res.ok) {
         const json = await res.json();
-        if (json.data) setState(json.data);
-        return true;
+        if (json.data) {
+          setState(json.data);
+          return true;
+        }
       }
-    } catch {
-      setState(defaultInitialState);
-    }
+    } catch {}
+    setState(defaultInitialState);
     return true;
   };
 
@@ -830,6 +1113,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const emptyState: AppState = {
       transactions: [],
+      familyContacts: state.familyContacts || DEFAULT_FAMILY_CONTACTS,
       freelanceJobs: [],
       savings: {
         emergencyFund: {
@@ -853,17 +1137,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem('my_money_app_state', JSON.stringify(emptyState));
     } catch {}
 
-    // Clear backend if running in fullstack
     try {
       await fetch('/api/clear-data', { method: 'POST' });
     } catch {}
 
-    // Auto-wipe Google Sheet data rows if connected
+    // Explicit remote wipe command only
     if (wipeRemoteSheet && currentScriptUrl) {
       try {
         await fetch(currentScriptUrl, {
           method: 'POST',
-          mode: 'no-cors',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: 'clear_data',
@@ -878,16 +1160,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return true;
   };
 
+  const isDemoDataLoaded = useMemo(() => {
+    const txs = state.transactions || [];
+    return txs.some(
+      (t) =>
+        t.id === 'tx-1' ||
+        t.id === 'tx-2' ||
+        t.title === 'Metro Recharge' ||
+        t.title === 'Bus Pass (Appa)'
+    );
+  }, [state.transactions]);
+
   return (
     <AppContext.Provider
       value={{
         state,
         loading,
         error,
+        syncError,
+        isSyncing,
         ...calculations,
         addTransaction,
         updateTransaction,
         deleteTransaction,
+        recordFamilyRepayment,
+        addFamilyContact,
+        updateFamilyContact,
+        deactivateFamilyContact,
         addFreelanceJob,
         updateFreelanceJob,
         deleteFreelanceJob,
@@ -898,6 +1197,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateSavingsGoal,
         deleteSavingsGoal,
         updateSettings,
+        refreshFromGoogleSheets,
         syncWithGoogleSheets,
         resetToSampleData,
         clearDemoData,

@@ -51,7 +51,7 @@ function MainApp() {
 
   // Header Title
   const getHeaderTitle = () => {
-    if (subView === 'appa') return 'Home';
+    if (subView === 'appa') return 'Family Settlements';
     if (subView === 'savings') return 'Savings';
     switch (currentTab) {
       case 'home':

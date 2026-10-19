@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { TransactionCategory, PaymentMethod, TransactionType, AppaNotificationData } from '../types';
+import { TransactionCategory, PaymentMethod, TransactionType, FamilyNotificationData } from '../types';
 
 interface AddTransactionModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialType?: TransactionType;
-  onShowAppaNotification?: (data: AppaNotificationData) => void;
+  onShowAppaNotification?: (data: FamilyNotificationData) => void;
 }
 
 const CATEGORIES: Array<{
@@ -29,7 +29,9 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   initialType = 'expense',
   onShowAppaNotification,
 }) => {
-  const { addTransaction } = useApp();
+  const { addTransaction, familyContacts, familyBalances } = useApp();
+
+  const activeContacts = familyContacts.filter((c) => c.active !== false);
 
   const [txType, setTxType] = useState<TransactionType>(initialType);
   const [amountStr, setAmountStr] = useState<string>('150');
@@ -37,7 +39,13 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   const [category, setCategory] = useState<TransactionCategory>('Travel');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('upi');
   const [date, setDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
-  const [isAppaReimbursable, setIsAppaReimbursable] = useState<boolean>(true);
+  
+  // Family settlements
+  const [someoneWillRepayMe, setSomeoneWillRepayMe] = useState<boolean>(true);
+  const [selectedContactId, setSelectedContactId] = useState<string>(
+    activeContacts[0]?.id || 'family-appa'
+  );
+
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [isSuccess, setIsSuccess] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -45,6 +53,13 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   if (!isOpen) return null;
 
   const currentAmount = parseInt(amountStr, 10) || 0;
+  const selectedContact = activeContacts.find((c) => c.id === selectedContactId) || activeContacts[0] || {
+    id: 'family-appa',
+    name: 'Appa',
+    active: true,
+  };
+
+  const selectedContactBalance = familyBalances[selectedContact.id]?.outstandingBalance || 0;
 
   const handleQuickAdd = (addVal: number) => {
     const next = currentAmount + addVal;
@@ -65,14 +80,32 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
       return;
     }
 
+    if (txType === 'expense' && someoneWillRepayMe && !selectedContact) {
+      setErrorMessage('Please select who should repay you.');
+      return;
+    }
+
+    if (txType === 'repayment' && selectedContactBalance > 0 && currentAmount > selectedContactBalance) {
+      // Allow it but warn
+      const proceed = window.confirm(
+        `Note: ₹${currentAmount} is greater than ${selectedContact.name}'s current outstanding balance of ₹${selectedContactBalance}. Record as advance settlement?`
+      );
+      if (!proceed) return;
+    }
+
     setIsSubmitting(true);
     setErrorMessage(null);
 
     let defaultTitle = title.trim();
     if (!defaultTitle) {
-      if (txType === 'repayment') defaultTitle = paymentMethod === 'cash' ? 'Cash from Appa' : 'UPI from Appa';
-      else defaultTitle = `${category} expense`;
+      if (txType === 'repayment') {
+        defaultTitle = paymentMethod === 'cash' ? `Cash from ${selectedContact.name}` : `UPI from ${selectedContact.name}`;
+      } else {
+        defaultTitle = `${category} expense`;
+      }
     }
+
+    const isReimbursable = txType === 'expense' ? someoneWillRepayMe : false;
 
     const res = await addTransaction({
       type: txType,
@@ -81,8 +114,12 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
       category: txType === 'repayment' ? 'Family' : category,
       date,
       paymentMethod,
-      isAppaReimbursable: txType === 'expense' ? isAppaReimbursable : false,
-      appaSettled: false,
+      isAppaReimbursable: selectedContact.id === 'family-appa' && isReimbursable,
+      appaSettled: txType === 'repayment' && selectedContact.id === 'family-appa',
+      isFamilyReimbursable: isReimbursable,
+      familyContactId: (isReimbursable || txType === 'repayment') ? selectedContact.id : undefined,
+      familyContactName: (isReimbursable || txType === 'repayment') ? selectedContact.name : undefined,
+      settlementStatus: txType === 'repayment' ? 'settled' : 'pending',
     });
 
     setIsSubmitting(false);
@@ -92,15 +129,18 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
       return;
     }
 
-    // When Appa will repay me was enabled OR when recording repayment:
+    // When someone will repay me was enabled OR when recording repayment:
     // Show expense/repayment confirmation screen after successful save!
-    if (txType === 'expense' && isAppaReimbursable) {
+    if (txType === 'expense' && someoneWillRepayMe) {
       if (onShowAppaNotification) {
         onShowAppaNotification({
           type: 'expense',
           title: defaultTitle,
           amount: currentAmount,
           date,
+          contactId: selectedContact.id,
+          contactName: selectedContact.name,
+          phoneNumber: selectedContact.phoneNumber,
           previousBalance: res.previousBalance,
           updatedBalance: res.updatedBalance,
           paymentMethod,
@@ -114,6 +154,9 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
           title: defaultTitle,
           amount: currentAmount,
           date,
+          contactId: selectedContact.id,
+          contactName: selectedContact.name,
+          phoneNumber: selectedContact.phoneNumber,
           previousBalance: res.previousBalance,
           updatedBalance: res.updatedBalance,
           paymentMethod,
@@ -121,7 +164,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
       }
       onClose();
     } else {
-      // Personal expense or regular income without Appa notification
+      // Personal expense or regular income without notification
       setIsSuccess(true);
       setTimeout(() => {
         setIsSuccess(false);
@@ -160,7 +203,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
               type="button"
               onClick={() => {
                 setTxType('expense');
-                if (title === 'Cash from Appa' || title === 'Client Payment') setTitle('');
+                if (title.startsWith('Cash from') || title.startsWith('UPI from')) setTitle('');
               }}
               className={`flex-1 py-2 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer ${
                 txType === 'expense'
@@ -190,7 +233,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
               type="button"
               onClick={() => {
                 setTxType('repayment');
-                setTitle(paymentMethod === 'cash' ? 'Cash from Appa' : 'UPI from Appa');
+                setTitle(paymentMethod === 'cash' ? `Cash from ${selectedContact.name}` : `UPI from ${selectedContact.name}`);
               }}
               className={`flex-1 py-2 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer ${
                 txType === 'repayment'
@@ -198,7 +241,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
                   : 'text-[#3e4942] hover:text-[#121c2a]'
               }`}
             >
-              Appa Paid Back
+              Family Repaid
             </button>
           </div>
 
@@ -246,7 +289,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
               onChange={(e) => setTitle(e.target.value)}
               placeholder={
                 txType === 'repayment'
-                  ? 'e.g. Handover morning settlement'
+                  ? `e.g. Settlement from ${selectedContact.name}`
                   : txType === 'income'
                   ? 'e.g. Poster Design Milestone'
                   : 'e.g. College bus travel'
@@ -348,43 +391,108 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
             </div>
           </div>
 
-          {/* Key Single Toggle: Appa will repay me (For Expense only) */}
+          {/* Key Toggle: Someone will repay me (For Expense only) */}
           {txType === 'expense' && (
-            <div className="w-full bg-white rounded-xl p-3.5 shadow-xs border border-[#dfe9fc]/60 space-y-1 transition-all">
+            <div className="w-full bg-white rounded-xl p-3.5 shadow-xs border border-[#dfe9fc]/60 space-y-3 transition-all">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <div className="w-7 h-7 rounded-full bg-[#ffdcc0] flex items-center justify-center text-[#894d00] shrink-0">
                     <span className="material-symbols-outlined text-[16px]">handshake</span>
                   </div>
                   <label
-                    htmlFor="appa-switch"
+                    htmlFor="repay-switch"
                     className="text-[14px] font-semibold text-[#121c2a] cursor-pointer select-none"
                   >
-                    Appa will repay me
+                    Someone will repay me
                   </label>
                 </div>
 
                 <button
-                  id="appa-switch"
+                  id="repay-switch"
                   type="button"
                   role="switch"
-                  aria-checked={isAppaReimbursable}
-                  onClick={() => setIsAppaReimbursable(!isAppaReimbursable)}
+                  aria-checked={someoneWillRepayMe}
+                  onClick={() => setSomeoneWillRepayMe(!someoneWillRepayMe)}
                   className={`w-11 h-6 rounded-full p-0.5 transition-colors duration-200 flex items-center focus:outline-none cursor-pointer ${
-                    isAppaReimbursable ? 'bg-[#006948] justify-end' : 'bg-[#d9e3f6] justify-start'
+                    someoneWillRepayMe ? 'bg-[#006948] justify-end' : 'bg-[#d9e3f6] justify-start'
                   }`}
                 >
                   <div className="w-5 h-5 rounded-full bg-white shadow-xs transition-transform duration-200" />
                 </button>
               </div>
 
-              {/* Sub note */}
-              <div className="pl-9 transition-opacity duration-200" style={{ opacity: isAppaReimbursable ? 1 : 0.4 }}>
-                <p className="text-[12px] text-[#3e4942] leading-relaxed">
-                  Will track{' '}
-                  <span className="font-semibold text-[#006948]">₹{currentAmount}</span> in{' '}
-                  <span className="font-semibold text-[#121c2a]">Appa Owes Me</span> and not count as personal spending.
-                </p>
+              {/* Contact Selector when enabled */}
+              {someoneWillRepayMe && (
+                <div className="space-y-2 pt-1 border-t border-[#dfe9fc]/50">
+                  <span className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block">
+                    Who should repay me?
+                  </span>
+                  <div className="grid grid-cols-2 gap-2">
+                    {activeContacts.map((contact) => {
+                      const isSelected = selectedContactId === contact.id;
+                      const bal = familyBalances[contact.id]?.outstandingBalance || 0;
+                      return (
+                        <button
+                          key={contact.id}
+                          type="button"
+                          onClick={() => setSelectedContactId(contact.id)}
+                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                            isSelected
+                              ? 'bg-[#006948]/10 border-[#006948] text-[#006948]'
+                              : 'bg-[#f8f9ff] border-[#dfe9fc] text-[#3e4942] hover:bg-[#eff3ff]'
+                          }`}
+                        >
+                          <span className="text-[13px] font-bold text-[#121c2a]">{contact.name}</span>
+                          <span className="text-[11px] text-[#3e4942] mt-0.5">
+                            Owes: <strong className="text-[#006948]">₹{bal}</strong>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <p className="text-[12px] text-[#3e4942] leading-relaxed pt-1">
+                    Will track <span className="font-semibold text-[#006948]">₹{currentAmount}</span> in{' '}
+                    <span className="font-semibold text-[#121c2a]">{selectedContact.name}'s</span> balance and not count as personal spending.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Family Contact Selector when Repayment is selected */}
+          {txType === 'repayment' && (
+            <div className="w-full bg-white rounded-xl p-3.5 shadow-xs border border-[#dfe9fc]/60 space-y-2.5">
+              <span className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block">
+                Who repaid you?
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                {activeContacts.map((contact) => {
+                  const isSelected = selectedContactId === contact.id;
+                  const bal = familyBalances[contact.id]?.outstandingBalance || 0;
+                  return (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedContactId(contact.id);
+                        if (title.startsWith('Cash from') || title.startsWith('UPI from')) {
+                          setTitle(paymentMethod === 'cash' ? `Cash from ${contact.name}` : `UPI from ${contact.name}`);
+                        }
+                      }}
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? 'bg-[#006948]/10 border-[#006948] text-[#006948]'
+                          : 'bg-[#f8f9ff] border-[#dfe9fc] text-[#3e4942] hover:bg-[#eff3ff]'
+                      }`}
+                    >
+                      <span className="text-[13px] font-bold text-[#121c2a]">{contact.name}</span>
+                      <span className="text-[11px] text-[#3e4942] mt-0.5">
+                        Outstanding: <strong className="text-[#006948]">₹{bal}</strong>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -424,7 +532,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
                       ? 'Save Expense'
                       : txType === 'income'
                       ? 'Save Income'
-                      : 'Record Repayment'}
+                      : `Record Repayment from ${selectedContact.name}`}
                   </span>
                 </>
               )}
