@@ -501,7 +501,7 @@ function doGet(e) {
             appaSettled: settled,
             notes: String(row[9] || ''),
             createdAt: row[10] ? String(row[10]) : new Date().toISOString(),
-            isFamilyReimbursable: Boolean(fId && isAppa),
+            isFamilyReimbursable: Boolean(fId || isAppa),
             familyContactId: fId,
             familyContactName: fName,
             settlementStatus: sStatus
@@ -653,7 +653,8 @@ function saveSingleTransaction(ss, tx) {
   var prevBalanceData = calculateFamilyBalancesFromSheet(ss);
   
   var txSheet = ensureTransactionsSheet(ss);
-  var txId = tx.id || ('tx-' + Date.now());
+  var rawId = tx.id || tx.transactionId || ('tx-sc-' + Date.now());
+  var txId = String(rawId).trim();
   
   var isAppa = Boolean(tx.isAppaReimbursable);
   var isFamily = Boolean(tx.isFamilyReimbursable || tx.familyContactId);
@@ -687,7 +688,7 @@ function saveSingleTransaction(ss, tx) {
   var data = txSheet.getDataRange().getValues();
   var existingRowIndex = -1;
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === String(txId)) {
+    if (String(data[i][0]).trim() === txId) {
       existingRowIndex = i + 1; // 1-indexed for SpreadsheetApp
       break;
     }
@@ -715,6 +716,7 @@ function saveSingleTransaction(ss, tx) {
   return {
     success: true,
     transactionId: txId,
+    id: txId,
     previousAppaBalance: prevBalanceData.appaBalance,
     updatedAppaBalance: updatedBalanceData.appaBalance,
     previousBalance: previousContactBal,

@@ -425,7 +425,10 @@ export function getField(obj: any, query: any, ...keys: string[]): any {
 export function resolveTransactionId(body: any, query?: any): string {
   const customId = getField(body, query, 'id', 'txId', 'transactionId');
   if (customId && typeof customId === 'string' && customId.trim()) {
-    return customId.trim();
+    const trimmed = customId.trim();
+    if (trimmed.startsWith('tx-sc-')) return trimmed;
+    const clean = trimmed.replace(/^tx-/, '');
+    return `tx-sc-${clean}`;
   }
   const customKey = getField(body, query, 'idempotencyKey', 'idempotency_key', 'retryKey');
   if (customKey && typeof customKey === 'string' && customKey.trim()) {
@@ -597,7 +600,13 @@ export default async function handler(req: any, res: any) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         action: 'add_transaction',
-        transaction,
+        transaction: {
+          ...transaction,
+          id: txId,
+          transactionId: txId,
+        },
+        id: txId,
+        transactionId: txId,
       }),
     });
 
@@ -606,6 +615,7 @@ export default async function handler(req: any, res: any) {
         success: false,
         error: `Google Apps Script returned HTTP status ${remoteRes.status}.`,
         transactionId: txId,
+        id: txId,
       });
     }
 
@@ -615,6 +625,7 @@ export default async function handler(req: any, res: any) {
         success: false,
         error: gJson.error || 'Google Sheets rejected transaction save.',
         transactionId: txId,
+        id: txId,
       });
     }
 
@@ -627,10 +638,13 @@ export default async function handler(req: any, res: any) {
 
     return res.status(200).json({
       success: true,
-      message: `Saved ₹${amount.toLocaleString('en-IN')} for "${title}".`,
-      summary: summaryText,
+      transactionId: transaction.id,
+      id: transaction.id,
+      message: `Saved ₹${amount.toLocaleString('en-IN')} for "${title}". (ID: ${transaction.id})`,
+      summary: `${summaryText} [ID: ${transaction.id}]`,
       transaction: {
         id: transaction.id,
+        transactionId: transaction.id,
         date: transaction.date,
         title: transaction.title,
         amount: transaction.amount,
@@ -643,6 +657,7 @@ export default async function handler(req: any, res: any) {
         familyContactName: transaction.familyContactName || null,
         settlementStatus: transaction.settlementStatus || null,
         notes: transaction.notes,
+        createdAt: transaction.createdAt,
       },
       family: {
         isReimbursable: familyRes.isReimbursable,
@@ -652,6 +667,7 @@ export default async function handler(req: any, res: any) {
         updatedBalance: gJson.updatedBalance ?? null,
       },
       googleSheetsConfirmed: true,
+      googleSheetsTransactionId: gJson.transactionId || transaction.id,
       googleSheetsMessage: gJson.message || 'Transaction saved successfully',
       timestamp: new Date().toISOString(),
     });
@@ -660,6 +676,7 @@ export default async function handler(req: any, res: any) {
       success: false,
       error: `Failed to reach Google Apps Script: ${err.message || 'Network timeout'}`,
       transactionId: txId,
+      id: txId,
     });
   }
 }

@@ -189,7 +189,11 @@ async function runTests() {
 
     const existingId = 'tx-existing-123';
     const id5 = resolveTransactionId({ id: existingId });
-    assert(id5 === existingId, 'Existing ID is preserved directly');
+    assert(id5 === 'tx-sc-existing-123', 'Existing ID is normalized to tx-sc format');
+
+    const scId = 'tx-sc-manual-999';
+    const id6 = resolveTransactionId({ id: scId });
+    assert(id6 === scId, 'Pre-formatted tx-sc ID preserved as is');
   }
 
   // -------------------------------------------------------------
@@ -286,10 +290,14 @@ async function runTests() {
       assert(res.statusCode === 200, 'Returns HTTP 200 on confirmed Google Sheets save');
       assert(res.body?.success === true, 'Response body has success: true');
       assert(res.body?.googleSheetsConfirmed === true, 'Confirms googleSheetsConfirmed is true');
+      assert(typeof res.body?.transactionId === 'string' && res.body.transactionId.startsWith('tx-sc-'), 'Root transactionId starts with tx-sc-');
+      assert(res.body?.transactionId === res.body?.transaction?.id, 'Root transactionId matches transaction.id');
+      assert(res.body?.id === res.body?.transaction?.id, 'Root id matches transaction.id');
       assert(res.body?.transaction?.amount === 85, 'Transaction amount is 85');
       assert(res.body?.transaction?.category === 'Food', 'Transaction category is Food');
       assert(res.body?.transaction?.isFamilyReimbursable === false, 'Personal expense isFamilyReimbursable is false');
       assert(interceptedPayload.action === 'add_transaction', 'Dispatches action "add_transaction" to Apps Script');
+      assert(interceptedPayload.transaction.id === res.body.transactionId, 'Passes exact transaction ID to Google Apps Script');
     }
 
     // Test 6.7: Family Reimbursable Expense (Appa)

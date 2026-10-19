@@ -25,10 +25,23 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState(false);
 
   if (!transaction) return null;
 
   const visual = getTransactionIcon(transaction);
+
+  const handleCopyId = () => {
+    if (transaction?.id) {
+      navigator.clipboard?.writeText(transaction.id).catch(() => {});
+      setCopiedId(true);
+      setTimeout(() => setCopiedId(false), 2000);
+    }
+  };
+
+  const isReimbursable = Boolean(transaction.isFamilyReimbursable || transaction.isAppaReimbursable);
+  const memberName = transaction.familyContactName || (transaction.isAppaReimbursable ? 'Appa' : 'Family');
+  const settlementStatus = transaction.settlementStatus || (transaction.appaSettled ? 'settled' : 'pending');
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,7 +115,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                   ? 'Expense Amount'
                   : transaction.type === 'income'
                   ? 'Income Inflow'
-                  : 'Appa Settlement'}
+                  : 'Family Settlement'}
               </span>
               <p className="text-[28px] font-bold text-[#121c2a] tabular-nums mt-0.5">
                 {transaction.type === 'expense' ? `- ₹${transaction.amount}` : `+ ₹${transaction.amount}`}
@@ -111,6 +124,22 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
             </div>
 
             <div className="space-y-2 text-[12px]">
+              {/* Transaction ID */}
+              <div className="flex justify-between items-center py-1 border-b border-[#dfe9fc]/40">
+                <span className="text-[#3e4942]">Transaction ID</span>
+                <button
+                  type="button"
+                  onClick={handleCopyId}
+                  title="Click to copy ID"
+                  className="flex items-center gap-1 font-mono text-[11px] bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#121c2a] px-2 py-0.5 rounded border border-[#dfe9fc] font-semibold transition-colors cursor-pointer"
+                >
+                  <span className="truncate max-w-[170px]">{transaction.id}</span>
+                  <span className="material-symbols-outlined text-[13px] text-[#006948]">
+                    {copiedId ? 'check' : 'content_copy'}
+                  </span>
+                </button>
+              </div>
+
               <div className="flex justify-between py-1 border-b border-[#dfe9fc]/40">
                 <span className="text-[#3e4942]">Category</span>
                 <span className="font-semibold text-[#121c2a]">{transaction.category}</span>
@@ -123,8 +152,10 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
 
               <div className="flex justify-between py-1 border-b border-[#dfe9fc]/40">
                 <span className="text-[#3e4942]">Family Settlement</span>
-                <span className={`font-semibold ${transaction.isAppaReimbursable ? 'text-[#894d00]' : 'text-[#3e4942]'}`}>
-                  {transaction.isAppaReimbursable ? 'Claimed to Appa (Pending)' : 'Personal'}
+                <span className={`font-semibold ${isReimbursable ? 'text-[#894d00]' : 'text-[#3e4942]'}`}>
+                  {isReimbursable
+                    ? `Claimed to ${memberName} (${settlementStatus === 'settled' ? 'Settled' : 'Pending'})`
+                    : 'Personal'}
                 </span>
               </div>
 
