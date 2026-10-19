@@ -354,15 +354,82 @@ export function extractToken(req: any): string {
 }
 
 /**
+ * Resolves request body from JSON object, raw string, Buffer, or stream.
+ */
+export async function resolveRequestBody(req: any): Promise<any> {
+  let b = req.body;
+  if (!b && typeof req.on === 'function') {
+    b = await new Promise((resolve) => {
+      let data = '';
+      req.on('data', (chunk: any) => {
+        data += chunk;
+      });
+      req.on('end', () => resolve(data));
+      req.on('error', () => resolve(''));
+    });
+  }
+
+  if (typeof b === 'string') {
+    const trimmed = b.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {}
+    }
+    try {
+      const sp = new URLSearchParams(trimmed);
+      const obj: any = {};
+      for (const [k, v] of sp.entries()) {
+        obj[k] = v;
+      }
+      if (Object.keys(obj).length > 0) return obj;
+    } catch {}
+  }
+
+  if (Buffer.isBuffer(b)) {
+    try {
+      return JSON.parse(b.toString('utf-8'));
+    } catch {}
+  }
+
+  return b && typeof b === 'object' ? b : {};
+}
+
+/**
+ * Case-insensitive lookup helper for payload properties and query params.
+ */
+export function getField(obj: any, query: any, ...keys: string[]): any {
+  for (const k of keys) {
+    if (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
+    if (obj) {
+      const foundKey = Object.keys(obj).find((ok) => ok.toLowerCase() === k.toLowerCase());
+      if (foundKey && obj[foundKey] !== undefined && obj[foundKey] !== null && obj[foundKey] !== '') {
+        return obj[foundKey];
+      }
+    }
+    if (query && query[k] !== undefined && query[k] !== null && query[k] !== '') return query[k];
+    if (query) {
+      const foundQKey = Object.keys(query).find((qk) => qk.toLowerCase() === k.toLowerCase());
+      if (foundQKey && query[foundQKey] !== undefined && query[foundQKey] !== null && query[foundQKey] !== '') {
+        return query[foundQKey];
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Resolves or generates transaction ID.
  * Guarantees idempotency on retries if idempotencyKey or id is supplied.
  */
-export function resolveTransactionId(body: any): string {
-  if (body?.id && typeof body.id === 'string' && body.id.trim()) {
-    return body.id.trim();
+export function resolveTransactionId(body: any, query?: any): string {
+  const customId = getField(body, query, 'id', 'txId', 'transactionId');
+  if (customId && typeof customId === 'string' && customId.trim()) {
+    return customId.trim();
   }
-  if (body?.idempotencyKey && typeof body.idempotencyKey === 'string' && body.idempotencyKey.trim()) {
-    const key = body.idempotencyKey.trim().replace(/[^a-z0-9_-]/gi, '');
+  const customKey = getField(body, query, 'idempotencyKey', 'idempotency_key', 'retryKey');
+  if (customKey && typeof customKey === 'string' && customKey.trim()) {
+    const key = customKey.trim().replace(/[^a-z0-9_-]/gi, '');
     return `tx-sc-${key}`;
   }
   return `tx-sc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -370,13 +437,14 @@ export function resolveTransactionId(body: any): string {
 
 /**
  * Primary Vercel Serverless Function & Express Route Handler
- * Endpoint: POST /api/shortcut
+ * Endpoint: POST /api/shortcut (and /api/shortcuts)
  */
 export default async function handler(req: any, res: any) {
-  // 1. CORS headers
+  // 1. Guaranteed CORS & JSON headers (prevents HTML error pages)
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-shortcut-secret');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -389,7 +457,10 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // 2. Authentication Verification
+  // 2. Resolve request body (handles unparsed JSON strings, form encoded, and streams)
+  const body = await resolveRequestBody(req);
+
+  // 3. Authentication Verification
   const configuredSecret = (
     process.env.SHORTCUT_SECRET_TOKEN ||
     process.env.MSR_SHORTCUT_TOKEN ||
@@ -405,7 +476,7 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  const providedToken = extractToken(req);
+  const providedToken = extractToken({ ...req, body });
   if (!providedToken || providedToken !== configuredSecret) {
     return res.status(401).json({
       success: false,
@@ -414,16 +485,18 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // 3. Request Body Validation
-  const body = req.body || {};
-
-  // Amount parsing
-  const rawAmount = body.amount ?? body.cost ?? body.price;
+  // 4. Request Body Validation (Case-insensitive & resilient parsing)
+  const rawAmount = getField(body, req.query, 'amount', 'cost', 'price', 'total', 'amt', 'value');
   let amount = NaN;
   if (typeof rawAmount === 'number') {
     amount = rawAmount;
   } else if (rawAmount !== undefined && rawAmount !== null) {
-    const cleaned = String(rawAmount).trim().replace(/[^0-9.-]/g, '');
+    // Strip currency symbols and words (₹, $, €, £, Rs, Rs., INR, Rupees, commas, spaces)
+    const cleaned = String(rawAmount)
+      .replace(/[₹$€£,]/g, '')
+      .replace(/(?:^|\s)(rs\.?|inr|rupees?)(?:\s|$)/gi, ' ')
+      .replace(/[^0-9.-]/g, '')
+      .trim();
     amount = parseFloat(cleaned);
   }
 
@@ -435,9 +508,8 @@ export default async function handler(req: any, res: any) {
   }
 
   // Description / Title parsing
-  const title = String(
-    body.description || body.title || body.name || body.item || ''
-  ).trim();
+  const rawTitle = getField(body, req.query, 'description', 'title', 'desc', 'name', 'item', 'forWhat', 'memo');
+  const title = String(rawTitle || '').trim();
   if (!title) {
     return res.status(400).json({
       success: false,
@@ -446,33 +518,43 @@ export default async function handler(req: any, res: any) {
   }
 
   // Date parsing
-  const date = normalizeDate(body.date);
+  const rawDate = getField(body, req.query, 'date', 'when', 'timestamp');
+  const date = normalizeDate(rawDate);
 
   // Category parsing
-  const category = normalizeCategory(body.category, title);
+  const rawCategory = getField(body, req.query, 'category', 'cat', 'type');
+  const category = normalizeCategory(rawCategory, title);
 
   // Payment method
-  const rawMethod = String(body.paymentMethod || body.payment_method || body.method || 'upi').toLowerCase();
+  const rawMethod = String(
+    getField(body, req.query, 'paymentMethod', 'payment_method', 'method', 'paidVia', 'mode') || 'upi'
+  ).toLowerCase();
   const paymentMethod = rawMethod.includes('cash') ? 'cash' : 'upi';
 
   // Family contact resolution (Appa, Amma, Chinna Akka, Periya Akka, or Personal)
-  const rawContact =
-    body.familyContactId ||
-    body.familyContactName ||
-    body.contactId ||
-    body.contact ||
-    body.for ||
-    body.reimbursableTo;
+  const rawContact = getField(
+    body,
+    req.query,
+    'familyContactId',
+    'familyContactName',
+    'contactId',
+    'contact',
+    'for',
+    'reimbursableTo',
+    'member',
+    'person'
+  );
 
-  const isAppaFlag = Boolean(body.isAppaReimbursable);
-  const isFamilyFlag = Boolean(body.isFamilyReimbursable);
+  const isAppaFlag = Boolean(getField(body, req.query, 'isAppaReimbursable', 'isAppa'));
+  const isFamilyFlag = Boolean(getField(body, req.query, 'isFamilyReimbursable', 'isFamily'));
 
   const familyRes = resolveFamilyContact(rawContact, isAppaFlag, isFamilyFlag);
 
   // Transaction ID with retry duplicate protection
-  const txId = resolveTransactionId(body);
+  const txId = resolveTransactionId(body, req.query);
 
-  const notes = String(body.notes || body.note || body.memo || 'Logged via iPhone Shortcut').trim();
+  const rawNotes = getField(body, req.query, 'notes', 'note', 'memo');
+  const notes = String(rawNotes || 'Logged via iPhone Shortcut').trim();
 
   const transaction: Transaction = {
     id: txId,

@@ -458,12 +458,137 @@ async function runTests() {
       assert(res.body?.success === false, 'Does NOT report success on network timeout');
       assert(res.body?.error.includes('Connection reset'), 'Returns network error details');
     }
+
+    // Test 6.12: Unparsed JSON string body (e.g. from iOS Shortcut text body)
+    {
+      let interceptedPayload: any = null;
+      globalThis.fetch = async (url: any, options: any) => {
+        interceptedPayload = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            success: true,
+            action: 'add_transaction',
+            transactionId: interceptedPayload.transaction.id,
+            message: 'Saved',
+          }),
+        } as any;
+      };
+
+      const req = {
+        method: 'POST',
+        headers: { authorization: `Bearer ${SECRET_TEST_TOKEN}` },
+        body: '{"amount": "₹250", "description": "Auto ride to college", "category": "Travel"}',
+      };
+      const res = createMockRes();
+      await handler(req, res);
+
+      assert(res.statusCode === 200, 'Parses unparsed JSON string body with currency symbol');
+      assert(res.body?.transaction?.amount === 250, 'Parsed ₹250 to numeric 250');
+      assert(res.body?.transaction?.category === 'Travel', 'Identified category Travel');
+    }
+
+    // Test 6.13: Capitalized dictionary keys (standard Apple Shortcuts behavior)
+    {
+      let interceptedPayload: any = null;
+      globalThis.fetch = async (url: any, options: any) => {
+        interceptedPayload = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            success: true,
+            action: 'add_transaction',
+            transactionId: interceptedPayload.transaction.id,
+            message: 'Saved',
+          }),
+        } as any;
+      };
+
+      const req = {
+        method: 'POST',
+        headers: { authorization: `Bearer ${SECRET_TEST_TOKEN}` },
+        body: {
+          Amount: '1,200',
+          Description: 'Hostel mess fee',
+          Category: 'College',
+          PaymentMethod: 'UPI',
+          For: 'Personal',
+        },
+      };
+      const res = createMockRes();
+      await handler(req, res);
+
+      assert(res.statusCode === 200, 'Supports capitalized dictionary keys from Apple Shortcuts');
+      assert(res.body?.transaction?.amount === 1200, 'Stripped comma and parsed 1,200 to numeric 1200');
+      assert(res.body?.transaction?.title === 'Hostel mess fee', 'Parsed Description property');
+      assert(res.body?.transaction?.category === 'College', 'Parsed Category property');
+    }
+
+    // Test 6.14: Currency word variations (INR, Rs, etc.)
+    {
+      let interceptedPayload: any = null;
+      globalThis.fetch = async (url: any, options: any) => {
+        interceptedPayload = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            success: true,
+            action: 'add_transaction',
+            transactionId: interceptedPayload.transaction.id,
+            message: 'Saved',
+          }),
+        } as any;
+      };
+
+      const req = {
+        method: 'POST',
+        headers: { authorization: `Bearer ${SECRET_TEST_TOKEN}` },
+        body: { amount: 'Rs. 45.50', description: 'Tea' },
+      };
+      const res = createMockRes();
+      await handler(req, res);
+
+      assert(res.statusCode === 200, 'Handles "Rs. 45.50" string');
+      assert(res.body?.transaction?.amount === 45.5, 'Parsed amount 45.5');
+    }
+
+    // Test 6.15: Query parameter fallbacks
+    {
+      let interceptedPayload: any = null;
+      globalThis.fetch = async (url: any, options: any) => {
+        interceptedPayload = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            success: true,
+            action: 'add_transaction',
+            transactionId: interceptedPayload.transaction.id,
+            message: 'Saved',
+          }),
+        } as any;
+      };
+
+      const req = {
+        method: 'POST',
+        headers: { authorization: `Bearer ${SECRET_TEST_TOKEN}` },
+        query: { amount: '75', description: 'Notebook' },
+      };
+      const res = createMockRes();
+      await handler(req, res);
+
+      assert(res.statusCode === 200, 'Extracts amount and description from query parameters if body empty');
+      assert(res.body?.transaction?.amount === 75, 'Parsed query parameter amount 75');
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }
 
   console.log('\n================================================================');
-  console.log('   ALL 24 APPLE SHORTCUT INTEGRATION TESTS PASSED SUCCESSFULLY! ✓');
+  console.log('   ALL 28 APPLE SHORTCUT INTEGRATION TESTS PASSED SUCCESSFULLY! ✓');
   console.log('================================================================\n');
 }
 

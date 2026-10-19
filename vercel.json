@@ -6,6 +6,22 @@
   "cleanUrls": true,
   "rewrites": [
     {
+      "source": "/api/shortcut",
+      "destination": "/api/shortcut"
+    },
+    {
+      "source": "/api/shortcut/(.*)",
+      "destination": "/api/shortcut"
+    },
+    {
+      "source": "/api/shortcuts",
+      "destination": "/api/shortcut"
+    },
+    {
+      "source": "/api/shortcuts/(.*)",
+      "destination": "/api/shortcut"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },

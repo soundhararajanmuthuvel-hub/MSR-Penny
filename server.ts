@@ -349,6 +349,14 @@ app.all('/api/shortcut', (req: Request, res: Response) => {
   return shortcutHandler(req, res);
 });
 
+app.all('/api/shortcuts', (req: Request, res: Response) => {
+  const db = readDb();
+  if (!process.env.GOOGLE_APPS_SCRIPT_URL && db.settings?.googleAppsScriptUrl) {
+    process.env.GOOGLE_APPS_SCRIPT_URL = db.settings.googleAppsScriptUrl;
+  }
+  return shortcutHandler(req, res);
+});
+
 app.all('/api/shortcuts/expense', (req: Request, res: Response) => {
   const db = readDb();
   if (!process.env.GOOGLE_APPS_SCRIPT_URL && db.settings?.googleAppsScriptUrl) {
