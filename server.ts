@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { initialSeedData } from './src/data/initialData';
 import { DEFAULT_FAMILY_CONTACTS, calculateFamilyBalances } from './src/utils/familyMigration';
+import shortcutHandler from './api/shortcut';
 
 dotenv.config();
 
@@ -55,6 +56,23 @@ function writeDb(data: any) {
 app.get('/api/state', (req: Request, res: Response) => {
   const db = readDb();
   res.json({ success: true, data: db });
+});
+
+// Apple Shortcuts Integration Endpoint
+app.all('/api/shortcut', async (req: Request, res: Response) => {
+  const db = readDb();
+  if (!process.env.GOOGLE_APPS_SCRIPT_URL && db.settings?.googleAppsScriptUrl) {
+    req.body = { ...req.body, googleAppsScriptUrl: db.settings.googleAppsScriptUrl };
+  }
+  return shortcutHandler(req, res);
+});
+
+app.all('/api/shortcuts/expense', async (req: Request, res: Response) => {
+  const db = readDb();
+  if (!process.env.GOOGLE_APPS_SCRIPT_URL && db.settings?.googleAppsScriptUrl) {
+    req.body = { ...req.body, googleAppsScriptUrl: db.settings.googleAppsScriptUrl };
+  }
+  return shortcutHandler(req, res);
 });
 
 // Family Contacts
@@ -320,6 +338,23 @@ app.post('/api/sync/push', async (req: Request, res: Response) => {
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message || 'Failed to reach Apps Script URL' });
   }
+});
+
+// Apple Shortcuts Integration Endpoints (Express dev server mapping)
+app.all('/api/shortcut', (req: Request, res: Response) => {
+  const db = readDb();
+  if (!process.env.GOOGLE_APPS_SCRIPT_URL && db.settings?.googleAppsScriptUrl) {
+    process.env.GOOGLE_APPS_SCRIPT_URL = db.settings.googleAppsScriptUrl;
+  }
+  return shortcutHandler(req, res);
+});
+
+app.all('/api/shortcuts/expense', (req: Request, res: Response) => {
+  const db = readDb();
+  if (!process.env.GOOGLE_APPS_SCRIPT_URL && db.settings?.googleAppsScriptUrl) {
+    process.env.GOOGLE_APPS_SCRIPT_URL = db.settings.googleAppsScriptUrl;
+  }
+  return shortcutHandler(req, res);
 });
 
 // Mount Vite in dev mode or serve static files in production

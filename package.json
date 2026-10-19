@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx scripts/test-family-settlements.ts && tsx scripts/test-two-way-sync.ts && tsx scripts/test-freelance-flow.ts"
+    "test": "tsx scripts/test-family-settlements.ts && tsx scripts/test-two-way-sync.ts && tsx scripts/test-freelance-flow.ts && tsx scripts/test-shortcut-endpoint.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
