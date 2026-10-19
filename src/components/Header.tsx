@@ -54,9 +54,9 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             aria-label="User Profile"
             onClick={onAvatarClick}
-            className="w-9 h-9 rounded-full bg-[#006948] flex items-center justify-center shrink-0 cursor-pointer shadow-sm active:scale-95 transition-transform"
+            className="w-9 h-9 rounded-full overflow-hidden border border-[#006948]/30 flex items-center justify-center shrink-0 cursor-pointer shadow-xs active:scale-95 transition-transform"
           >
-            <span className="material-symbols-outlined text-white text-[19px]">person</span>
+            <img src="/pwa-192x192.png" alt="MSR Penny" className="w-full h-full object-cover" />
           </button>
         </div>
       </div>

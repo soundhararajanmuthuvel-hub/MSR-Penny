@@ -523,6 +523,13 @@ function doGet(e) {
       });
     }
 
+    // 2. Delete Transaction action (GET fallback)
+    if (action === 'delete_transaction') {
+      var txId = (e && e.parameter) ? (e.parameter.transactionId || e.parameter.id) : null;
+      var deleteResult = deleteSingleTransaction(ss, txId);
+      return jsonResponse(deleteResult);
+    }
+
     // Default status info
     var currentBalances = calculateFamilyBalancesFromSheet(ss);
     return jsonResponse({
@@ -614,6 +621,13 @@ function doPost(e) {
         message: "Family contacts saved successfully.",
         contacts: payload.contacts
       });
+    }
+
+    // 5. Delete Transaction action
+    if (action === 'delete_transaction') {
+      var txId = payload.transactionId || payload.id;
+      var deleteResult = deleteSingleTransaction(ss, txId);
+      return jsonResponse(deleteResult);
     }
 
     return jsonResponse({ success: false, error: "Unknown action: " + action });
@@ -711,6 +725,76 @@ function saveSingleTransaction(ss, tx) {
 }
 
 /**
+ * Safely deletes a single transaction by ID from the Transactions sheet.
+ * Never clears the sheet. Rebuilds ledgers and returns updated balances.
+ */
+function deleteSingleTransaction(ss, txId) {
+  if (!txId) {
+    return { success: false, error: "Transaction ID is required for deletion." };
+  }
+
+  var txSheet = ensureTransactionsSheet(ss);
+  var data = txSheet.getDataRange().getValues();
+  if (data.length <= 1) {
+    return { success: false, notFound: true, error: "Transaction not found: database is empty." };
+  }
+
+  var targetRowIndex = -1;
+  var deletedRowData = null;
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === String(txId).trim()) {
+      targetRowIndex = i + 1; // 1-indexed for SpreadsheetApp sheet methods
+      deletedRowData = data[i];
+      break;
+    }
+  }
+
+  if (targetRowIndex === -1) {
+    return {
+      success: false,
+      notFound: true,
+      error: "Transaction not found with ID: " + txId,
+      transactionId: txId
+    };
+  }
+
+  // Delete only the single matching row
+  txSheet.deleteRow(targetRowIndex);
+
+  // Rebuild derived ledgers & summary
+  try {
+    rebuildAppaLedger(ss);
+  } catch (e) {}
+
+  try {
+    updateSummaryDashboard(ss, [], {});
+  } catch (e) {}
+
+  var balanceInfo = calculateFamilyBalancesFromSheet(ss);
+
+  var isAppa = String(deletedRowData[7]).toUpperCase() === 'YES';
+  var contactId = deletedRowData[11] ? String(deletedRowData[11]) : (isAppa ? 'family-appa' : '');
+  var updatedContactBal = (contactId && balanceInfo.balancesByContact[contactId])
+    ? balanceInfo.balancesByContact[contactId].outstandingBalance
+    : balanceInfo.appaBalance;
+
+  return {
+    success: true,
+    message: "Transaction deleted successfully from Google Sheets.",
+    transactionId: txId,
+    deletedTitle: String(deletedRowData[2] || ''),
+    deletedAmount: Number(deletedRowData[4]) || 0,
+    deletedContactId: contactId,
+    appaBalance: balanceInfo.appaBalance,
+    totalFamilyOutstanding: balanceInfo.totalFamilyOutstanding,
+    balancesByContact: balanceInfo.balancesByContact,
+    updatedBalance: updatedContactBal,
+    timestamp: new Date().toISOString()
+  };
+}
+
+/**
  * Sync entire application state into organized sheets with merge protection.
  */
 function syncAllData(ss, payload) {
@@ -765,10 +849,16 @@ function syncAllData(ss, payload) {
         t.settlementStatus || (t.appaSettled ? "settled" : "pending")
       ];
 
-      if (!txMap[t.id]) {
+      // If transaction exists in sheet, update it.
+      // If it is NOT in sheet, ONLY insert if marked as isPendingSync: true
+      // or if allowNewTransactions is explicitly set.
+      // This prevents deleted records from being resurrected!
+      if (txMap[t.id]) {
+        txMap[t.id] = rowValues;
+      } else if (t.isPendingSync || payload.allowNewTransactions) {
         existingIdsOrder.push(t.id);
+        txMap[t.id] = rowValues;
       }
-      txMap[t.id] = rowValues;
     });
 
     // Write merged list

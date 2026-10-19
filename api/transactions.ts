@@ -8,10 +8,55 @@ export default async function handler(req: any, res: any) {
     return res.status(200).end();
   }
 
-  // DELETE transaction
-  if (req.method === 'DELETE') {
-    const id = req.query?.id || req.body?.id;
-    return res.status(200).json({ success: true, message: `Transaction ${id} removed` });
+  // DELETE transaction (supports DELETE method or POST action=delete_transaction)
+  if (req.method === 'DELETE' || (req.method === 'POST' && req.body?.action === 'delete_transaction')) {
+    const id = req.query?.id || req.body?.id || req.body?.transactionId;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'Transaction ID is required for deletion.' });
+    }
+
+    const scriptUrl =
+      req.body?.googleAppsScriptUrl ||
+      req.query?.scriptUrl ||
+      process.env.GOOGLE_APPS_SCRIPT_URL ||
+      process.env.VITE_GOOGLE_APPS_SCRIPT_URL ||
+      '';
+
+    if (scriptUrl) {
+      try {
+        const remoteRes = await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'delete_transaction',
+            transactionId: id,
+          }),
+        });
+
+        if (!remoteRes.ok) {
+          return res.status(502).json({
+            success: false,
+            error: `Google Apps Script returned HTTP status ${remoteRes.status}`,
+            transactionId: id,
+          });
+        }
+
+        const json = await remoteRes.json();
+        return res.status(json.success ? 200 : (json.notFound ? 404 : 500)).json(json);
+      } catch (err: any) {
+        return res.status(502).json({
+          success: false,
+          error: `Failed to reach Google Apps Script: ${err.message}`,
+          transactionId: id,
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      transactionId: id,
+      message: `Transaction ${id} removed from local state (Google Sheets not configured).`,
+    });
   }
 
   if (req.method !== 'POST') {

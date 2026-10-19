@@ -164,12 +164,55 @@ app.post('/api/transactions', async (req: Request, res: Response) => {
   });
 });
 
-app.delete('/api/transactions/:id', (req: Request, res: Response) => {
+const handleDeleteTransaction = async (req: Request, res: Response) => {
+  const id = req.params?.id || (req.query?.id as string) || req.body?.id || req.body?.transactionId;
+  if (!id) {
+    return res.status(400).json({ success: false, error: 'Transaction ID is required' });
+  }
+
   const db = readDb();
-  db.transactions = db.transactions.filter((t: any) => t.id !== req.params.id);
+  const deletedTx = db.transactions.find((t: any) => t.id === id);
+  db.transactions = db.transactions.filter((t: any) => t.id !== id);
   writeDb(db);
-  res.json({ success: true, data: db });
-});
+
+  const scriptUrl = db.settings?.googleAppsScriptUrl || process.env.GOOGLE_APPS_SCRIPT_URL;
+  let remoteResponse: any = null;
+
+  if (scriptUrl) {
+    try {
+      const gRes = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'delete_transaction',
+          transactionId: id,
+        }),
+      });
+      if (gRes.ok) {
+        remoteResponse = await gRes.json().catch(() => null);
+      }
+    } catch (e: any) {
+      console.warn('Google Sheets deletion notice:', e.message);
+    }
+  }
+
+  const contacts = db.familyContacts || DEFAULT_FAMILY_CONTACTS;
+  const balances = calculateFamilyBalances(db.transactions, contacts);
+
+  return res.json({
+    success: true,
+    transactionId: id,
+    deletedTransaction: deletedTx,
+    remoteResponse,
+    appaBalance: balances.contactBalances['family-appa']?.outstandingBalance || 0,
+    totalFamilyOutstanding: balances.totalFamilyOutstanding,
+    balancesByContact: balances.contactBalances,
+    data: db,
+  });
+};
+
+app.delete('/api/transactions/:id', handleDeleteTransaction);
+app.delete('/api/transactions', handleDeleteTransaction);
 
 // Freelance CRUD
 app.post('/api/freelance', (req: Request, res: Response) => {

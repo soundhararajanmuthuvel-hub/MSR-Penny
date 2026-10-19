@@ -79,9 +79,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           <p className="text-[14px] text-[#3e4942] flex items-center gap-1.5 font-normal">
             Hi, welcome back <span>👋</span>
           </p>
-          <p className="text-[20px] text-[#121c2a] font-semibold tracking-tight">
-            MSR Penny
-          </p>
+          <div className="flex items-center gap-2">
+            <img src="/pwa-192x192.png" alt="MSR Penny" className="w-6 h-6 rounded-full object-cover shadow-xs border border-[#006948]/20 shrink-0" />
+            <p className="text-[20px] text-[#121c2a] font-semibold tracking-tight">
+              MSR Penny
+            </p>
+          </div>
         </div>
 
         <button

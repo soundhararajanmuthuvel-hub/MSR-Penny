@@ -174,17 +174,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, [state]);
 
-  // Merge remote transactions with local state by unique ID (never loses data)
-  const mergeRemoteTransactions = useCallback((remoteTxs: Transaction[], existingTxs: Transaction[]): Transaction[] => {
-    const map = new Map<string, Transaction>();
-    
-    // Existing local transactions first
-    existingTxs.forEach((t) => {
-      if (t && t.id) map.set(t.id, t);
-    });
+  // Reconcile authoritative remote transactions with local state:
+  // - Remote transactions are authoritative for confirmed records.
+  // - Any local confirmed transaction absent from remote transactions is REMOVED (deleted remotely).
+  // - Genuinely pending offline creations (isPendingSync: true) and pending deletions are respected.
+  const reconcileRemoteTransactions = useCallback((remoteTxs: Transaction[], existingTxs: Transaction[]): Transaction[] => {
+    // Collect pending offline operations from existing local transactions
+    const pendingCreations = existingTxs.filter((t) => t && t.isPendingSync && !t.isPendingDeletion);
+    const pendingDeletionIds = new Set(existingTxs.filter((t) => t && t.isPendingDeletion).map((t) => t.id));
 
-    // Remote transactions update or append
-    remoteTxs.forEach((t) => {
+    // Filter remote transactions to exclude any pending offline deletion
+    const confirmedFromRemote = remoteTxs.filter((t) => t && t.id && !pendingDeletionIds.has(t.id));
+
+    // Combine authoritative remote with pending offline creations
+    const combined = [...confirmedFromRemote, ...pendingCreations];
+
+    // Deduplicate by ID
+    const map = new Map<string, Transaction>();
+    combined.forEach((t) => {
       if (t && t.id) map.set(t.id, t);
     });
 
@@ -215,12 +222,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             : (state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS);
 
           const { migratedTransactions } = migrateAppaTransactions(json.data.transactions || [], remoteContacts);
-          const merged = mergeRemoteTransactions(migratedTransactions, state.transactions);
+          const reconciled = reconcileRemoteTransactions(migratedTransactions, state.transactions);
 
           setState((prev) => ({
             ...prev,
             ...json.data,
-            transactions: merged,
+            transactions: reconciled,
             familyContacts: remoteContacts,
             settings: {
               ...json.data.settings,
@@ -249,11 +256,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               : (state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS);
 
             const { migratedTransactions } = migrateAppaTransactions(json.transactions, remoteContacts);
-            const merged = mergeRemoteTransactions(migratedTransactions, state.transactions);
+            const reconciled = reconcileRemoteTransactions(migratedTransactions, state.transactions);
 
             setState((prev) => ({
               ...prev,
-              transactions: merged,
+              transactions: reconciled,
               familyContacts: remoteContacts,
               settings: {
                 ...prev.settings,
@@ -271,7 +278,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     setLoading(false);
-  }, [state.settings?.googleAppsScriptUrl, state.familyContacts, state.transactions, mergeRemoteTransactions]);
+  }, [state.settings?.googleAppsScriptUrl, state.familyContacts, state.transactions, reconcileRemoteTransactions]);
 
   useEffect(() => {
     fetchState();
@@ -546,16 +553,101 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return true;
   };
 
-  const deleteTransaction = async (id: string) => {
-    setState((prev) => ({
-      ...prev,
-      transactions: prev.transactions.filter((t) => t.id !== id),
-    }));
+  const deleteTransaction = async (id: string): Promise<boolean> => {
+    const existingTx = state.transactions.find((t) => t.id === id);
+    if (!existingTx) return false;
 
-    try {
-      await fetch(`/api/transactions?id=${id}`, { method: 'DELETE' });
-    } catch {}
-    return true;
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+
+    // 1. If transaction was only created offline and never synced, remove it immediately
+    if (existingTx.isPendingSync) {
+      setState((prev) => ({
+        ...prev,
+        transactions: prev.transactions.filter((t) => t.id !== id),
+      }));
+      return true;
+    }
+
+    // 2. Verified backend deletion
+    let deletionVerified = false;
+    let failureReason = '';
+
+    // Direct Google Apps Script dispatch
+    if (scriptUrl) {
+      try {
+        const res = await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'delete_transaction',
+            transactionId: id,
+          }),
+        });
+
+        if (res.ok) {
+          const json = await res.json().catch(() => null);
+          if (json && (json.success || json.notFound)) {
+            deletionVerified = true;
+          } else if (json && json.error) {
+            failureReason = json.error;
+          }
+        }
+      } catch (err: any) {
+        console.warn('Direct Apps Script deletion notice:', err.message);
+      }
+    }
+
+    // Proxy API (/api/transactions)
+    if (!deletionVerified) {
+      try {
+        const proxyRes = await fetch(`/api/transactions?id=${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'delete_transaction',
+            transactionId: id,
+            googleAppsScriptUrl: scriptUrl,
+          }),
+        });
+
+        if (proxyRes.ok) {
+          const pJson = await proxyRes.json().catch(() => null);
+          if (pJson && (pJson.success || pJson.notFound)) {
+            deletionVerified = true;
+          } else if (pJson && pJson.error) {
+            failureReason = pJson.error;
+          }
+        }
+      } catch (pErr: any) {
+        console.warn('Proxy deletion notice:', pErr.message);
+      }
+    }
+
+    // If Google Sheets is not configured, allow local deletion
+    if (!scriptUrl) {
+      deletionVerified = true;
+    }
+
+    // If verified, remove from React state
+    if (deletionVerified) {
+      setState((prev) => ({
+        ...prev,
+        transactions: prev.transactions.filter((t) => t.id !== id),
+      }));
+      return true;
+    }
+
+    // If offline, mark as pending deletion for later synchronization
+    if (!navigator.onLine) {
+      setState((prev) => ({
+        ...prev,
+        transactions: prev.transactions.map((t) => (t.id === id ? { ...t, isPendingDeletion: true } : t)),
+      }));
+      return true;
+    }
+
+    throw new Error(failureReason || 'Failed to delete transaction from Google Sheets. Record preserved.');
   };
 
   // Record full or partial repayment specifically allocated to a family contact
@@ -946,7 +1038,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         : (state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS);
 
       const { migratedTransactions } = migrateAppaTransactions(json.transactions, remoteContacts);
-      const merged = mergeRemoteTransactions(migratedTransactions, state.transactions);
+      const reconciled = reconcileRemoteTransactions(migratedTransactions, state.transactions);
 
       const syncedAt = new Date().toISOString();
       const updatedSettings = {
@@ -957,7 +1049,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       setState((prev) => ({
         ...prev,
-        transactions: merged,
+        transactions: reconciled,
         familyContacts: remoteContacts,
         settings: updatedSettings,
       }));
@@ -965,8 +1057,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setIsSyncing(false);
       return {
         success: true,
-        message: `Successfully refreshed! ${merged.length} transactions loaded from Google Sheets.`,
-        count: merged.length,
+        message: `Successfully refreshed! ${reconciled.length} transactions loaded from Google Sheets.`,
+        count: reconciled.length,
       };
     } catch (err: any) {
       setIsSyncing(false);
@@ -978,7 +1070,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  // Full Two-Way Synchronization (Push Local + Pull Remote)
+  // Full Two-Way Synchronization (Flush Pending Offline Operations + Pull Authoritative Remote)
   const syncWithGoogleSheets = async (url?: string) => {
     const envDefaults = getEffectiveEnvSettings();
     let targetUrl = (url || state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
@@ -1008,88 +1100,62 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsSyncing(true);
     setSyncError(null);
 
-    const payload = {
-      action: 'sync_all',
-      timestamp: new Date().toISOString(),
-      transactions: state.transactions,
-      familyContacts: state.familyContacts || DEFAULT_FAMILY_CONTACTS,
-      freelanceJobs: state.freelanceJobs,
-      savings: state.savings,
-      settings: {
-        ...state.settings,
-        googleAppsScriptUrl: targetUrl,
-      },
-    };
-
-    let synced = false;
-    let syncedMessage = '';
-
-    // 1. Try serverless proxy (/api/sync/push)
-    try {
-      const res = await fetch('/api/sync/push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl, ...payload }),
-      });
-      const cType = res.headers.get('content-type') || '';
-      if (res.ok && cType.includes('application/json')) {
-        const json = await res.json();
-        if (json.success) {
-          synced = true;
-          syncedMessage = `Dual-sync completed! ${state.transactions.length} records verified with Google Sheets.`;
-        }
-      }
-    } catch {}
-
-    // 2. Direct client-side POST to Google Apps Script
-    if (!synced) {
+    // 1. Flush any pending offline deletions first
+    const pendingDeletions = state.transactions.filter((t) => t.isPendingDeletion);
+    for (const delTx of pendingDeletions) {
       try {
-        const response = await fetch(targetUrl, {
+        await fetch(targetUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            action: 'delete_transaction',
+            transactionId: delTx.id,
+          }),
         });
-
-        if (response.ok) {
-          const json = await response.json();
-          if (json.success) {
-            synced = true;
-            syncedMessage = `Dual-sync successful! ${state.transactions.length} transactions saved to Google Sheets.`;
-          } else {
-            throw new Error(json.error || 'Google Apps Script reported an error.');
-          }
-        } else {
-          throw new Error(`Google Apps Script responded with status ${response.status}`);
-        }
-      } catch (err: any) {
-        setIsSyncing(false);
-        setSyncError(err.message || 'Sync failed.');
-        return {
-          success: false,
-          message: err.message || 'Network error while attempting to sync to Google Sheets.',
-        };
+      } catch (e) {
+        console.warn('Pending deletion flush notice:', e);
       }
     }
 
-    const syncedAt = new Date().toISOString();
-    const updatedSettings: AppSettings = {
-      ...state.settings,
-      googleAppsScriptUrl: targetUrl,
-      lastSyncedAt: syncedAt,
-      syncEnabled: true,
-    };
+    // 2. Flush any pending offline creations
+    const pendingCreations = state.transactions.filter((t) => t.isPendingSync && !t.isPendingDeletion);
+    for (const addTx of pendingCreations) {
+      try {
+        await fetch(targetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'add_transaction',
+            transaction: { ...addTx, isPendingSync: false },
+          }),
+        });
+      } catch (e) {
+        console.warn('Pending creation flush notice:', e);
+      }
+    }
 
-    setState((prev) => ({
-      ...prev,
-      settings: updatedSettings,
-    }));
+    // 3. Sync family contacts, freelance jobs, savings to Google Sheets
+    try {
+      await fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'sync_all',
+          familyContacts: state.familyContacts || DEFAULT_FAMILY_CONTACTS,
+          freelanceJobs: state.freelanceJobs,
+          savings: state.savings,
+          settings: {
+            ...state.settings,
+            googleAppsScriptUrl: targetUrl,
+          },
+        }),
+      });
+    } catch {}
 
+    // 4. Now pull the authoritative remote snapshot from Google Sheets
+    const refreshResult = await refreshFromGoogleSheets();
     setIsSyncing(false);
-    return {
-      success: true,
-      message: syncedMessage || `Dual-sync successful! ${state.transactions.length} transactions synced.`,
-      count: state.transactions.length,
-    };
+    return refreshResult;
   };
 
   const resetToSampleData = async () => {

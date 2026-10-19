@@ -72,8 +72,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
       <div className="w-full max-w-sm bg-white rounded-2xl p-5 shadow-2xl space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-full bg-[#006948] flex items-center justify-center text-white">
-              <span className="material-symbols-outlined text-[20px]">person</span>
+            <div className="w-10 h-10 rounded-full overflow-hidden border border-[#006948]/30 shadow-xs shrink-0">
+              <img src="/pwa-192x192.png" alt="MSR Penny" className="w-full h-full object-cover" />
             </div>
             <div>
               <h3 className="text-[16px] font-bold text-[#121c2a]">MSR Penny Profile</h3>

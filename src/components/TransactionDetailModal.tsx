@@ -22,6 +22,10 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
   const [isAppaReimbursable, setIsAppaReimbursable] = useState(transaction?.isAppaReimbursable || false);
   const [notes, setNotes] = useState(transaction?.notes || '');
 
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   if (!transaction) return null;
 
   const visual = getTransactionIcon(transaction);
@@ -45,9 +49,21 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
     onClose();
   };
 
-  const handleDelete = async () => {
-    await deleteTransaction(transaction.id);
-    onClose();
+  const handleConfirmDelete = async () => {
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const success = await deleteTransaction(transaction.id);
+      setIsDeleting(false);
+      if (success) {
+        onClose();
+      } else {
+        setDeleteError('Failed to delete transaction from Google Sheets. Record preserved.');
+      }
+    } catch (err: any) {
+      setIsDeleting(false);
+      setDeleteError(err.message || 'Error communicating with Google Sheets. Record preserved.');
+    }
   };
 
   return (
@@ -120,21 +136,73 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
               )}
             </div>
 
-            <div className="pt-2 flex gap-2">
-              <button
-                onClick={() => setIsEditing(true)}
-                className="flex-1 py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[13px] font-semibold shadow-xs"
-              >
-                Edit
-              </button>
+            {isConfirmingDelete ? (
+              <div className="pt-2 p-3 bg-[#ffdad6]/25 border border-[#ba1a1a]/20 rounded-xl space-y-2.5">
+                <div className="flex items-start gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-[#ba1a1a] shrink-0 mt-0.5">warning</span>
+                  <div>
+                    <p className="text-[12px] font-bold text-[#ba1a1a]">
+                      Delete this transaction?
+                    </p>
+                    <p className="text-[11px] text-[#3e4942]">
+                      This permanently deletes the record from MSR Penny and your linked Google Sheet.
+                    </p>
+                  </div>
+                </div>
 
-              <button
-                onClick={handleDelete}
-                className="px-4 py-2.5 rounded-xl bg-[#ffdad6] hover:bg-[#ffdad6]/80 text-[#ba1a1a] text-[13px] font-semibold"
-              >
-                Delete
-              </button>
-            </div>
+                {deleteError && (
+                  <div className="p-2 bg-white rounded-lg border border-[#ba1a1a]/30 text-[11px] text-[#ba1a1a] font-medium">
+                    ⚠️ {deleteError}
+                  </div>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    disabled={isDeleting}
+                    onClick={() => {
+                      setIsConfirmingDelete(false);
+                      setDeleteError(null);
+                    }}
+                    className="flex-1 py-2 rounded-lg border border-[#dfe9fc] text-[12px] font-semibold text-[#3e4942] hover:bg-[#eff3ff] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={isDeleting}
+                    onClick={handleConfirmDelete}
+                    className="flex-1 py-2 rounded-lg bg-[#ba1a1a] hover:bg-[#93000a] text-white text-[12px] font-semibold shadow-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-60"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <span>Deleting...</span>
+                      </>
+                    ) : (
+                      'Yes, Delete'
+                    )}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="pt-2 flex gap-2">
+                <button
+                  onClick={() => setIsEditing(true)}
+                  className="flex-1 py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[13px] font-semibold shadow-xs transition-colors"
+                >
+                  Edit
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsConfirmingDelete(true);
+                    setDeleteError(null);
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-[#ffdad6] hover:bg-[#ffdad6]/80 text-[#ba1a1a] text-[13px] font-semibold transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           /* Edit Mode Form */

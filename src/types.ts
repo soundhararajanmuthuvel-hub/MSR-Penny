@@ -42,6 +42,8 @@ export interface Transaction {
   settlementStatus?: 'pending' | 'settled';
   repaymentForContactId?: string;
   needsReview?: boolean;
+  isPendingSync?: boolean;
+  isPendingDeletion?: boolean;
 }
 
 export interface Milestone {
