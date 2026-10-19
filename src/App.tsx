@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/Header';
 import { BottomNav, NavTab } from './components/BottomNav';
@@ -37,10 +37,26 @@ function MainApp() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [appaNotificationData, setAppaNotificationData] = useState<AppaNotificationData | null>(null);
 
+  useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash.replace('#', '').toLowerCase();
+      if (hash === 'freelance' || hash === 'history' || hash === 'reports' || hash === 'home') {
+        setCurrentTab(hash as NavTab);
+        setSubView('none');
+      }
+    };
+    handleHash();
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
   // Tab change resets subview
   const handleTabChange = (tab: NavTab) => {
     setCurrentTab(tab);
     setSubView('none');
+    if (window.location.hash.replace('#', '') !== tab) {
+      window.location.hash = tab;
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 

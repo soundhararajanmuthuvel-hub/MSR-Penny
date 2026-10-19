@@ -18,6 +18,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       <div className="max-w-md mx-auto flex items-center justify-around h-16 px-1">
         {/* Home */}
         <button
+          id="tab-home"
           onClick={() => onTabChange('home')}
           className={`flex flex-col items-center justify-center min-w-[56px] h-14 transition-colors cursor-pointer ${
             currentTab === 'home'
@@ -36,6 +37,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
 
         {/* History */}
         <button
+          id="tab-history"
           onClick={() => onTabChange('history')}
           className={`flex flex-col items-center justify-center min-w-[56px] h-14 transition-colors cursor-pointer ${
             currentTab === 'history'
@@ -55,6 +57,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
         {/* Floating Center Add Button */}
         <div className="relative flex items-center justify-center px-1">
           <button
+            id="btn-quick-add"
             aria-label="Add Transaction"
             onClick={onOpenAdd}
             className="w-12 h-12 -mt-5 rounded-full bg-[#006948] text-white flex items-center justify-center shadow-[0_4px_14px_rgba(0,105,72,0.35)] active:scale-90 hover:bg-[#00855d] transition-all cursor-pointer"
@@ -65,6 +68,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
 
         {/* Freelance */}
         <button
+          id="tab-freelance"
           onClick={() => onTabChange('freelance')}
           className={`flex flex-col items-center justify-center min-w-[56px] h-14 transition-colors cursor-pointer ${
             currentTab === 'freelance'
@@ -83,6 +87,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
 
         {/* Reports */}
         <button
+          id="tab-reports"
           onClick={() => onTabChange('reports')}
           className={`flex flex-col items-center justify-center min-w-[56px] h-14 transition-colors cursor-pointer ${
             currentTab === 'reports'

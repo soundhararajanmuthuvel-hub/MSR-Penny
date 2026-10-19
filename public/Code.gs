@@ -511,11 +511,13 @@ function doGet(e) {
 
       var contacts = readFamilyContactsFromSheet(ss);
       var balanceInfo = calculateFamilyBalancesFromSheet(ss);
+      var freelanceJobs = readFreelanceProjectsFromSheet(ss);
 
       return jsonResponse({
         success: true,
         transactions: transactions,
         familyContacts: contacts,
+        freelanceJobs: freelanceJobs,
         appaBalance: balanceInfo.appaBalance,
         totalFamilyOutstanding: balanceInfo.totalFamilyOutstanding,
         balancesByContact: balanceInfo.balancesByContact,
@@ -1103,7 +1105,7 @@ function rebuildAppaLedger(ss) {
  */
 function syncFreelanceSheet(ss, jobs) {
   var sheet = getOrCreateSheet(ss, "Freelance_Projects", [
-    "Job ID", "Project Title", "Client Name", "Total Fee (₹)", "Paid Amount (₹)", "Pending (₹)", "Status", "Due Date", "Milestones"
+    "Job ID", "Project Title", "Client Name", "Total Fee (₹)", "Paid Amount (₹)", "Pending (₹)", "Status", "Due Date", "Design Type", "Notes", "Milestones"
   ]);
 
   if (sheet.getLastRow() > 1) {
@@ -1127,6 +1129,8 @@ function syncFreelanceSheet(ss, jobs) {
       Number(j.pendingAmount) || 0,
       j.status || "in_progress",
       j.dueDate || "",
+      j.designType || "Poster",
+      j.notes || "",
       milestonesSummary
     ];
   });
@@ -1135,6 +1139,36 @@ function syncFreelanceSheet(ss, jobs) {
   formatCurrencyColumn(sheet, 4, 2, rows.length);
   formatCurrencyColumn(sheet, 5, 2, rows.length);
   formatCurrencyColumn(sheet, 6, 2, rows.length);
+}
+
+/**
+ * Reads freelance projects from Freelance_Projects sheet
+ */
+function readFreelanceProjectsFromSheet(ss) {
+  var sheet = ss.getSheetByName("Freelance_Projects");
+  if (!sheet || sheet.getLastRow() <= 1) return [];
+
+  var data = sheet.getDataRange().getValues();
+  var jobs = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[0]) continue;
+    jobs.push({
+      id: String(row[0]),
+      title: String(row[1] || ''),
+      clientName: String(row[2] || ''),
+      totalFee: Number(row[3]) || 0,
+      paidAmount: Number(row[4]) || 0,
+      pendingAmount: Number(row[5]) || 0,
+      status: String(row[6] || 'in_progress').toLowerCase(),
+      dueDate: formatDateForSheet(row[7]),
+      designType: row[8] ? String(row[8]) : 'Poster',
+      notes: row[9] ? String(row[9]) : '',
+      milestones: [],
+      costs: []
+    });
+  }
+  return jobs;
 }
 
 /**

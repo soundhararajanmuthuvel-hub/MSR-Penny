@@ -767,6 +767,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       createdAt: new Date().toISOString(),
     };
 
+    const nextJobs = [newJob, ...state.freelanceJobs];
+
     setState((prev) => ({
       ...prev,
       freelanceJobs: [newJob, ...prev.freelanceJobs],
@@ -779,6 +781,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         body: JSON.stringify(newJob),
       });
     } catch {}
+
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    if (scriptUrl) {
+      try {
+        await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'sync_all',
+            familyContacts: state.familyContacts || DEFAULT_FAMILY_CONTACTS,
+            freelanceJobs: nextJobs,
+            savings: state.savings,
+            settings: state.settings,
+          }),
+        });
+      } catch (err: any) {
+        console.warn('Google Sheets sync for freelance job deferred:', err?.message);
+      }
+    }
+
     return true;
   };
 
@@ -786,10 +809,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const pendingAmount = Math.max(0, job.totalFee - job.paidAmount);
     const status = pendingAmount === 0 ? 'completed' : (job.paidAmount > 0 ? 'in_progress' : job.status || 'in_progress');
     const recalculatedJob = { ...job, pendingAmount, status };
+    const nextJobs = state.freelanceJobs.map((j) => (j.id === job.id ? recalculatedJob : j));
 
     setState((prev) => ({
       ...prev,
-      freelanceJobs: prev.freelanceJobs.map((j) => (j.id === job.id ? recalculatedJob : j)),
+      freelanceJobs: nextJobs,
     }));
 
     try {
@@ -799,6 +823,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         body: JSON.stringify(recalculatedJob),
       });
     } catch {}
+
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    if (scriptUrl) {
+      try {
+        await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'sync_all',
+            familyContacts: state.familyContacts || DEFAULT_FAMILY_CONTACTS,
+            freelanceJobs: nextJobs,
+            savings: state.savings,
+            settings: state.settings,
+          }),
+        });
+      } catch (err: any) {
+        console.warn('Google Sheets sync for updated freelance job deferred:', err?.message);
+      }
+    }
+
     return true;
   };
 
@@ -888,14 +933,37 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteFreelanceJob = async (id: string) => {
+    const nextJobs = state.freelanceJobs.filter((j) => j.id !== id);
+
     setState((prev) => ({
       ...prev,
-      freelanceJobs: prev.freelanceJobs.filter((j) => j.id !== id),
+      freelanceJobs: nextJobs,
     }));
 
     try {
       await fetch(`/api/freelance?id=${id}`, { method: 'DELETE' });
     } catch {}
+
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    if (scriptUrl) {
+      try {
+        await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'sync_all',
+            familyContacts: state.familyContacts || DEFAULT_FAMILY_CONTACTS,
+            freelanceJobs: nextJobs,
+            savings: state.savings,
+            settings: state.settings,
+          }),
+        });
+      } catch (err: any) {
+        console.warn('Google Sheets sync for deleted freelance job deferred:', err?.message);
+      }
+    }
+
     return true;
   };
 
@@ -1047,10 +1115,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         syncEnabled: true,
       };
 
+      const remoteJobs = Array.isArray(json.freelanceJobs) && json.freelanceJobs.length > 0
+        ? json.freelanceJobs
+        : state.freelanceJobs;
+
       setState((prev) => ({
         ...prev,
         transactions: reconciled,
         familyContacts: remoteContacts,
+        freelanceJobs: remoteJobs,
         settings: updatedSettings,
       }));
 

@@ -73,6 +73,8 @@ export interface FreelanceJob {
   milestones: Milestone[];
   costs: ProjectCost[];
   createdAt: string;
+  designType?: string;
+  notes?: string;
 }
 
 export interface EmergencyFund {

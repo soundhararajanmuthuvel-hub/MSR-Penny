@@ -19,17 +19,36 @@ export const FreelanceScreen: React.FC = () => {
   const [showAddCostModal, setShowAddCostModal] = useState<string | null>(null); // jobId
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Design Types Options
+  const DESIGN_TYPES = [
+    'Poster',
+    'Social Media',
+    'Banner / Flex',
+    'Branding / Logo',
+    'UI / Web',
+    'Certificate',
+    'Other',
+  ];
+
   // New Job Form State
-  const [jobTitle, setJobTitle] = useState('Fest Social Posters');
-  const [clientName, setClientName] = useState('Campus Culture Club');
-  const [totalFeeStr, setTotalFeeStr] = useState('2000');
+  const [jobTitle, setJobTitle] = useState('');
+  const [clientName, setClientName] = useState('');
+  const [designType, setDesignType] = useState('Poster');
+  const [totalFeeStr, setTotalFeeStr] = useState('');
+  const [advanceReceivedStr, setAdvanceReceivedStr] = useState('0');
+  const [advancePaymentMethod, setAdvancePaymentMethod] = useState<PaymentMethod>('upi');
+  const [projectStatus, setProjectStatus] = useState<'in_progress' | 'awaiting_payment' | 'completed'>('in_progress');
   const [dueDate, setDueDate] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() + 7);
     return d.toISOString().split('T')[0];
   });
-  const [milestone1Title, setMilestone1Title] = useState('Advance 50%');
-  const [milestone2Title, setMilestone2Title] = useState('Final Delivery 50%');
+  const [initialCostTitle, setInitialCostTitle] = useState('');
+  const [initialCostStr, setInitialCostStr] = useState('');
+  const [initialCostPaymentMethod, setInitialCostPaymentMethod] = useState<PaymentMethod>('cash');
+  const [jobNotes, setJobNotes] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Custom Payment State
   const [customPaymentAmount, setCustomPaymentAmount] = useState('800');
@@ -42,6 +61,9 @@ export const FreelanceScreen: React.FC = () => {
   const [editTotalFee, setEditTotalFee] = useState('');
   const [editPaidAmount, setEditPaidAmount] = useState('');
   const [editDueDate, setEditDueDate] = useState('');
+  const [editDesignType, setEditDesignType] = useState('Poster');
+  const [editStatus, setEditStatus] = useState<'in_progress' | 'awaiting_payment' | 'completed'>('in_progress');
+  const [editNotes, setEditNotes] = useState('');
   const [editMilestones, setEditMilestones] = useState<Milestone[]>([]);
 
   // New Cost Form State
@@ -51,6 +73,25 @@ export const FreelanceScreen: React.FC = () => {
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 2500);
+  };
+
+  const resetNewJobForm = () => {
+    setJobTitle('');
+    setClientName('');
+    setDesignType('Poster');
+    setTotalFeeStr('');
+    setAdvanceReceivedStr('0');
+    setAdvancePaymentMethod('upi');
+    setProjectStatus('in_progress');
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    setDueDate(d.toISOString().split('T')[0]);
+    setInitialCostTitle('');
+    setInitialCostStr('');
+    setInitialCostPaymentMethod('cash');
+    setJobNotes('');
+    setFormError(null);
+    setIsSubmitting(false);
   };
 
   const freelanceJobs = state.freelanceJobs || [];
@@ -74,31 +115,157 @@ export const FreelanceScreen: React.FC = () => {
 
   const handleCreateJob = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError(null);
+
+    const title = jobTitle.trim();
+    const client = clientName.trim();
     const fee = parseInt(totalFeeStr, 10) || 0;
-    if (fee <= 0 || !jobTitle.trim() || !clientName.trim()) return;
+    const advance = parseInt(advanceReceivedStr, 10) || 0;
+    const initialCost = parseInt(initialCostStr, 10) || 0;
 
-    const m1Amount = Math.round(fee / 2);
-    const m2Amount = fee - m1Amount;
+    if (!title) {
+      setFormError('Please enter a project title (e.g. Fest Social Posters).');
+      return;
+    }
+    if (!client) {
+      setFormError('Please enter client or organization name.');
+      return;
+    }
+    if (fee <= 0) {
+      setFormError('Agreed amount (Total Fee) must be greater than ₹0.');
+      return;
+    }
+    if (advance < 0) {
+      setFormError('Advance received cannot be negative.');
+      return;
+    }
+    if (advance > fee) {
+      setFormError(`Advance received (₹${advance}) cannot exceed agreed total fee (₹${fee}).`);
+      return;
+    }
+    if (initialCost < 0) {
+      setFormError('Work costs cannot be negative.');
+      return;
+    }
 
-    const milestones: Milestone[] = [
-      { id: 'm-' + Date.now() + '-1', title: milestone1Title || 'Milestone 1', amount: m1Amount, paid: false },
-      { id: 'm-' + Date.now() + '-2', title: milestone2Title || 'Milestone 2', amount: m2Amount, paid: false },
-    ];
+    setIsSubmitting(true);
 
-    await addFreelanceJob({
-      title: jobTitle.trim(),
-      clientName: clientName.trim(),
-      totalFee: fee,
-      paidAmount: 0,
-      pendingAmount: fee,
-      status: 'in_progress',
-      dueDate,
-      milestones,
-      costs: [],
-    });
+    try {
+      const remaining = Math.max(0, fee - advance);
+      const computedStatus: 'in_progress' | 'awaiting_payment' | 'completed' =
+        remaining === 0 ? 'completed' : projectStatus;
 
-    setShowAddJobModal(false);
-    showToast(`Created new freelance job "${jobTitle}"!`);
+      const milestones: Milestone[] = [];
+      const nowStr = new Date().toISOString().split('T')[0];
+
+      if (advance > 0 && remaining > 0) {
+        milestones.push({
+          id: 'm-' + Date.now() + '-1',
+          title: 'Advance Payment',
+          amount: advance,
+          paid: true,
+          paidAt: nowStr,
+        });
+        milestones.push({
+          id: 'm-' + Date.now() + '-2',
+          title: 'Final Delivery & Balance',
+          amount: remaining,
+          paid: false,
+        });
+      } else if (advance === fee) {
+        milestones.push({
+          id: 'm-' + Date.now() + '-1',
+          title: 'Full Agreed Fee Paid',
+          amount: fee,
+          paid: true,
+          paidAt: nowStr,
+        });
+      } else {
+        const m1 = Math.round(fee / 2);
+        const m2 = fee - m1;
+        milestones.push({
+          id: 'm-' + Date.now() + '-1',
+          title: 'Advance / First Draft (50%)',
+          amount: m1,
+          paid: false,
+        });
+        milestones.push({
+          id: 'm-' + Date.now() + '-2',
+          title: 'Final Delivery & Balance',
+          amount: m2,
+          paid: false,
+        });
+      }
+
+      const initialCosts = [];
+      if (initialCost > 0) {
+        initialCosts.push({
+          id: 'cost-' + Date.now(),
+          title: initialCostTitle.trim() || 'Printing & materials',
+          amount: initialCost,
+          date: nowStr,
+        });
+      }
+
+      const jobId = 'job-' + Date.now();
+
+      // 1. Add Freelance Job
+      await addFreelanceJob({
+        title,
+        clientName: client,
+        designType,
+        totalFee: fee,
+        paidAmount: advance,
+        pendingAmount: remaining,
+        status: computedStatus,
+        dueDate,
+        milestones,
+        costs: initialCosts,
+        notes: jobNotes.trim() || undefined,
+      });
+
+      // 2. If advance received, record income transaction
+      if (advance > 0) {
+        await addTransaction({
+          type: 'income',
+          title: `${title} - Advance Payment`,
+          amount: advance,
+          category: 'Freelance',
+          date: nowStr,
+          paymentMethod: advancePaymentMethod,
+          isAppaReimbursable: false,
+          isFamilyReimbursable: false,
+          appaSettled: false,
+          freelanceJobId: jobId,
+          milestoneTitle: 'Advance Payment',
+          notes: `Advance from ${client}${jobNotes ? ` (${jobNotes})` : ''}`,
+        });
+      }
+
+      // 3. If initial work cost entered, record expense transaction
+      if (initialCost > 0) {
+        await addTransaction({
+          type: 'expense',
+          title: `${title} - ${initialCostTitle.trim() || 'Prints & materials'}`,
+          amount: initialCost,
+          category: 'Freelance',
+          date: nowStr,
+          paymentMethod: initialCostPaymentMethod,
+          isAppaReimbursable: false,
+          isFamilyReimbursable: false,
+          appaSettled: false,
+          notes: `Work costs for ${client}`,
+        });
+      }
+
+      setShowAddJobModal(false);
+      resetNewJobForm();
+      showToast(`Created new freelance job "${title}" successfully!`);
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to save new freelance job. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const openEditJobModal = (job: FreelanceJob) => {
@@ -108,6 +275,9 @@ export const FreelanceScreen: React.FC = () => {
     setEditTotalFee(String(job.totalFee));
     setEditPaidAmount(String(job.paidAmount));
     setEditDueDate(job.dueDate || '');
+    setEditDesignType(job.designType || 'Poster');
+    setEditStatus(job.status || 'in_progress');
+    setEditNotes(job.notes || '');
     setEditMilestones(JSON.parse(JSON.stringify(job.milestones || [])));
   };
 
@@ -118,7 +288,7 @@ export const FreelanceScreen: React.FC = () => {
     const totalFee = parseInt(editTotalFee, 10) || 0;
     const paidAmount = parseInt(editPaidAmount, 10) || 0;
     const pendingAmount = Math.max(0, totalFee - paidAmount);
-    const status = pendingAmount === 0 ? 'completed' : 'in_progress';
+    const status = pendingAmount === 0 ? 'completed' : editStatus;
 
     const updated: FreelanceJob = {
       ...editingJob,
@@ -128,7 +298,9 @@ export const FreelanceScreen: React.FC = () => {
       paidAmount,
       pendingAmount,
       dueDate: editDueDate,
+      designType: editDesignType,
       status,
+      notes: editNotes.trim() || undefined,
       milestones: editMilestones,
     };
 
@@ -219,6 +391,7 @@ export const FreelanceScreen: React.FC = () => {
         </div>
 
         <button
+          id="btn-new-job"
           onClick={() => setShowAddJobModal(true)}
           className="bg-[#006948] hover:bg-[#00855d] text-white px-3.5 py-2 rounded-xl text-[12px] font-semibold flex items-center gap-1 shadow-xs active:scale-95 transition-all cursor-pointer"
         >
@@ -301,11 +474,38 @@ export const FreelanceScreen: React.FC = () => {
             >
               <div className="flex items-start justify-between">
                 <div>
-                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-[#eff3ff] text-[#4648d4]">
-                    {job.clientName}
-                  </span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-[#eff3ff] text-[#4648d4]">
+                      {job.clientName}
+                    </span>
+                    {job.designType && (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-[#88f8c4]/30 text-[#006948]">
+                        {job.designType}
+                      </span>
+                    )}
+                    <span
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
+                        job.status === 'completed'
+                          ? 'bg-[#88f8c4]/30 text-[#006948]'
+                          : job.status === 'awaiting_payment'
+                          ? 'bg-[#ffeed4] text-[#894d00]'
+                          : 'bg-[#eff3ff] text-[#3e4942]'
+                      }`}
+                    >
+                      {job.status === 'completed'
+                        ? 'Completed'
+                        : job.status === 'awaiting_payment'
+                        ? 'Awaiting Payment'
+                        : 'In Progress'}
+                    </span>
+                  </div>
                   <h4 className="text-[16px] font-bold text-[#121c2a] mt-1">{job.title}</h4>
                   <p className="text-[11px] text-[#3e4942]">Due: {job.dueDate || 'Flexible'}</p>
+                  {job.notes && (
+                    <p className="text-[11px] text-[#556059] bg-[#f8f9ff] px-2.5 py-1.5 rounded-lg border border-[#dfe9fc]/50 mt-1.5">
+                      <span className="font-semibold text-[#121c2a]">Note:</span> {job.notes}
+                    </p>
+                  )}
                 </div>
 
                 <div className="text-right">
@@ -433,8 +633,24 @@ export const FreelanceScreen: React.FC = () => {
         })}
 
         {freelanceJobs.length === 0 && (
-          <div className="bg-white p-6 rounded-2xl text-center text-[#6d7a72] text-[13px] border border-[#dfe9fc]/60">
-            No freelance jobs added yet. Tap "New Job" to track your poster design clients!
+          <div className="bg-white p-8 rounded-3xl text-center border border-[#dfe9fc]/60 shadow-xs space-y-3">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-[#88f8c4]/40 flex items-center justify-center text-[#006948]">
+              <span className="material-symbols-outlined text-[32px]">palette</span>
+            </div>
+            <div>
+              <h4 className="text-[15px] font-bold text-[#121c2a]">No Freelance Jobs Yet</h4>
+              <p className="text-[12px] text-[#3e4942] mt-1 max-w-xs mx-auto">
+                Track your poster design clients, milestone payments, printing work costs, and net profits in one place.
+              </p>
+            </div>
+            <button
+              id="btn-create-first-job"
+              onClick={() => setShowAddJobModal(true)}
+              className="bg-[#006948] hover:bg-[#00855d] text-white px-4 py-2.5 rounded-xl text-[13px] font-semibold inline-flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer mt-1"
+            >
+              <span className="material-symbols-outlined text-[18px]">add</span>
+              <span>+ Create First Job</span>
+            </button>
           </div>
         )}
       </div>
@@ -444,6 +660,330 @@ export const FreelanceScreen: React.FC = () => {
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-[#121c2a] text-white px-4 py-2.5 rounded-full shadow-lg text-[13px] flex items-center gap-2 z-50 animate-fade-in">
           <span className="material-symbols-outlined text-[18px] text-[#88f8c4]">check_circle</span>
           <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* New Freelance Job Modal */}
+      {showAddJobModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="w-full max-w-md max-h-[92vh] overflow-y-auto bg-white rounded-3xl p-5 sm:p-6 shadow-2xl space-y-4 border border-[#dfe9fc]/80">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-1 border-b border-[#dfe9fc]/50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#88f8c4]/40 flex items-center justify-center text-[#006948]">
+                  <span className="material-symbols-outlined text-[22px]">palette</span>
+                </div>
+                <div>
+                  <h3 className="text-[17px] font-bold text-[#121c2a]">New Freelance Job</h3>
+                  <p className="text-[11px] text-[#3e4942]">Record agreed fee, advance payment & prints</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddJobModal(false);
+                  resetNewJobForm();
+                }}
+                className="w-8 h-8 flex items-center justify-center rounded-full text-[#3e4942] hover:bg-[#eff3ff] transition-colors cursor-pointer"
+                title="Close modal"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            {/* Validation Error Alert */}
+            {formError && (
+              <div className="p-3 bg-[#ba1a1a]/10 border border-[#ba1a1a]/30 rounded-xl flex items-start gap-2 text-[#ba1a1a] text-[12px]">
+                <span className="material-symbols-outlined text-[18px] shrink-0 mt-0.5">error</span>
+                <span className="font-medium">{formError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleCreateJob} className="space-y-3.5">
+              {/* Client Name */}
+              <div>
+                <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1">
+                  Client / Organization <span className="text-[#ba1a1a]">*</span>
+                </label>
+                <input
+                  id="input-client-name"
+                  type="text"
+                  value={clientName}
+                  onChange={(e) => setClientName(e.target.value)}
+                  placeholder="e.g. Campus Culture Club, Tech Fest, Prof. Ramesh"
+                  required
+                  autoFocus
+                  className="w-full px-3.5 py-2.5 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[13px] text-[#121c2a] placeholder-[#8e9a92] focus:outline-none focus:border-[#006948] transition-colors"
+                />
+              </div>
+
+              {/* Project Title */}
+              <div>
+                <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1">
+                  Project Name <span className="text-[#ba1a1a]">*</span>
+                </label>
+                <input
+                  id="input-job-title"
+                  type="text"
+                  value={jobTitle}
+                  onChange={(e) => setJobTitle(e.target.value)}
+                  placeholder="e.g. Fest Social Media Posters & ID Badges"
+                  required
+                  className="w-full px-3.5 py-2.5 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[13px] text-[#121c2a] placeholder-[#8e9a92] focus:outline-none focus:border-[#006948] transition-colors"
+                />
+              </div>
+
+              {/* Design Type Selector */}
+              <div>
+                <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1.5">
+                  Design Type
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {DESIGN_TYPES.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setDesignType(t)}
+                      className={`px-3 py-1.5 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
+                        designType === t
+                          ? 'bg-[#006948] text-white shadow-xs'
+                          : 'bg-[#f8f9ff] text-[#3e4942] border border-[#dfe9fc] hover:bg-[#eff3ff]'
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Agreed Amount & Advance Received */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1">
+                    Agreed Amount (₹) <span className="text-[#ba1a1a]">*</span>
+                  </label>
+                  <input
+                    id="input-total-fee"
+                    type="number"
+                    min="1"
+                    value={totalFeeStr}
+                    onChange={(e) => setTotalFeeStr(e.target.value)}
+                    placeholder="2000"
+                    required
+                    className="w-full px-3.5 py-2.5 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[16px] font-bold text-[#121c2a] placeholder-[#8e9a92] focus:outline-none focus:border-[#006948]"
+                  />
+                  <span className="text-[10px] text-[#556059] mt-0.5 block">Total contract fee</span>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1">
+                    Advance Received (₹)
+                  </label>
+                  <input
+                    id="input-advance-received"
+                    type="number"
+                    min="0"
+                    value={advanceReceivedStr}
+                    onChange={(e) => setAdvanceReceivedStr(e.target.value)}
+                    placeholder="0"
+                    className="w-full px-3.5 py-2.5 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[16px] font-bold text-[#006948] placeholder-[#8e9a92] focus:outline-none focus:border-[#006948]"
+                  />
+                  <span className="text-[10px] text-[#556059] mt-0.5 block">Advance payment</span>
+                </div>
+              </div>
+
+              {/* Live Remaining Balance Calculation Card */}
+              {(() => {
+                const fee = Math.max(0, parseInt(totalFeeStr, 10) || 0);
+                const adv = Math.max(0, parseInt(advanceReceivedStr, 10) || 0);
+                const rem = Math.max(0, fee - adv);
+                return (
+                  <div className="bg-[#eff3ff] p-3 rounded-2xl border border-[#dfe9fc] flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-[#3e4942] uppercase tracking-wider block">
+                        Remaining Pending Balance
+                      </span>
+                      <p className="text-[11px] text-[#556059]">
+                        {adv > 0
+                          ? `₹${adv.toLocaleString('en-IN')} advance recorded as income`
+                          : 'No advance received yet'}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[17px] font-bold text-[#ac6200] tabular-nums">
+                        ₹{rem.toLocaleString('en-IN')}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Advance Payment Method if Advance > 0 */}
+              {(parseInt(advanceReceivedStr, 10) || 0) > 0 && (
+                <div>
+                  <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1">
+                    Advance Payment Method
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAdvancePaymentMethod('upi')}
+                      className={`py-2 rounded-xl text-[12px] font-semibold border transition-all cursor-pointer ${
+                        advancePaymentMethod === 'upi'
+                          ? 'bg-[#006948] text-white border-[#006948]'
+                          : 'bg-[#f8f9ff] text-[#3e4942] border-[#dfe9fc]'
+                      }`}
+                    >
+                      UPI / Online
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdvancePaymentMethod('cash')}
+                      className={`py-2 rounded-xl text-[12px] font-semibold border transition-all cursor-pointer ${
+                        advancePaymentMethod === 'cash'
+                          ? 'bg-[#006948] text-white border-[#006948]'
+                          : 'bg-[#f8f9ff] text-[#3e4942] border-[#dfe9fc]'
+                      }`}
+                    >
+                      Cash
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Project Status & Due Date */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1">
+                    Project Status
+                  </label>
+                  <select
+                    value={projectStatus}
+                    onChange={(e) => setProjectStatus(e.target.value as any)}
+                    className="w-full px-3 py-2.5 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[12px] font-semibold text-[#121c2a] focus:outline-none focus:border-[#006948]"
+                  >
+                    <option value="in_progress">In Progress</option>
+                    <option value="awaiting_payment">Awaiting Payment</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1">
+                    Due Date
+                  </label>
+                  <input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[12px] text-[#121c2a] focus:outline-none focus:border-[#006948]"
+                  />
+                </div>
+              </div>
+
+              {/* Optional Initial Work Costs / Prints */}
+              <div className="p-3 bg-[#f8f9ff] rounded-2xl border border-[#dfe9fc]/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[15px] text-[#ba1a1a]">print</span>
+                    <span>Initial Work Costs / Prints (Optional)</span>
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2">
+                    <input
+                      type="text"
+                      value={initialCostTitle}
+                      onChange={(e) => setInitialCostTitle(e.target.value)}
+                      placeholder="e.g. Sample print, photo paper"
+                      className="w-full px-2.5 py-1.5 bg-white border border-[#dfe9fc] rounded-lg text-[12px] text-[#121c2a] placeholder-[#8e9a92] focus:outline-none focus:border-[#006948]"
+                    />
+                  </div>
+                  <div>
+                    <input
+                      type="number"
+                      min="0"
+                      value={initialCostStr}
+                      onChange={(e) => setInitialCostStr(e.target.value)}
+                      placeholder="₹ Amount"
+                      className="w-full px-2.5 py-1.5 bg-white border border-[#dfe9fc] rounded-lg text-[12px] font-bold text-[#121c2a] placeholder-[#8e9a92] focus:outline-none focus:border-[#006948]"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-[#6d7a72] block">
+                    Recorded as work expense and deducted from net profit.
+                  </span>
+                  {(parseInt(initialCostStr, 10) || 0) > 0 && (
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setInitialCostPaymentMethod('cash')}
+                        className={`text-[10px] px-2 py-0.5 rounded-md font-semibold cursor-pointer ${
+                          initialCostPaymentMethod === 'cash' ? 'bg-[#006948] text-white' : 'bg-white text-[#3e4942] border border-[#dfe9fc]'
+                        }`}
+                      >
+                        Cash
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setInitialCostPaymentMethod('upi')}
+                        className={`text-[10px] px-2 py-0.5 rounded-md font-semibold cursor-pointer ${
+                          initialCostPaymentMethod === 'upi' ? 'bg-[#006948] text-white' : 'bg-white text-[#3e4942] border border-[#dfe9fc]'
+                        }`}
+                      >
+                        UPI
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="text-[11px] font-bold text-[#3e4942] uppercase tracking-wider block mb-1">
+                  Notes / Deliverables
+                </label>
+                <textarea
+                  value={jobNotes}
+                  onChange={(e) => setJobNotes(e.target.value)}
+                  placeholder="e.g. 3 revisions included, deliver print-ready CMYK PDF and PNG for Instagram."
+                  rows={2}
+                  className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[12px] text-[#121c2a] placeholder-[#8e9a92] focus:outline-none focus:border-[#006948]"
+                />
+              </div>
+
+              {/* Modal Actions */}
+              <div className="pt-2 flex gap-2">
+                <button
+                  id="btn-cancel-job"
+                  type="button"
+                  onClick={() => {
+                    setShowAddJobModal(false);
+                    resetNewJobForm();
+                  }}
+                  className="flex-1 py-2.5 rounded-xl border border-[#dfe9fc] text-[13px] font-semibold text-[#3e4942] hover:bg-[#eff3ff] transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="btn-submit-job"
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[13px] font-bold shadow-xs active:scale-98 transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                >
+                  {isSubmitting ? (
+                    <span>Saving...</span>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-[16px]">check</span>
+                      <span>Create Project</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -622,12 +1162,57 @@ export const FreelanceScreen: React.FC = () => {
 
               <div>
                 <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
-                  Due Date
+                  Design Type
                 </label>
-                <input
-                  type="date"
-                  value={editDueDate}
-                  onChange={(e) => setEditDueDate(e.target.value)}
+                <select
+                  value={editDesignType}
+                  onChange={(e) => setEditDesignType(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[13px] text-[#121c2a] focus:outline-none focus:border-[#006948]"
+                >
+                  {DESIGN_TYPES.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
+                    Project Status
+                  </label>
+                  <select
+                    value={editStatus}
+                    onChange={(e) => setEditStatus(e.target.value as any)}
+                    className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[12px] font-semibold text-[#121c2a] focus:outline-none focus:border-[#006948]"
+                  >
+                    <option value="in_progress">In Progress</option>
+                    <option value="awaiting_payment">Awaiting Payment</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
+                    Due Date
+                  </label>
+                  <input
+                    type="date"
+                    value={editDueDate}
+                    onChange={(e) => setEditDueDate(e.target.value)}
+                    className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[12px] text-[#121c2a] focus:outline-none focus:border-[#006948]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
+                  Notes
+                </label>
+                <textarea
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  rows={2}
+                  placeholder="Project notes, deliverables or specs"
                   className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[12px] text-[#121c2a] focus:outline-none focus:border-[#006948]"
                 />
               </div>
