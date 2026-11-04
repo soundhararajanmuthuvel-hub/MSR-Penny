@@ -1,4 +1,4 @@
-// Vercel Serverless Function: /api/cron/reminder
+// Vercel Serverless Function: /api/cron
 import webpush from 'web-push';
 import fs from 'fs';
 import path from 'path';
@@ -27,7 +27,7 @@ export default async function handler(req: any, res: any) {
   const cronSecret = process.env.CRON_SECRET;
   const shortcutToken = process.env.SHORTCUT_SECRET_TOKEN;
   const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  const querySecret = (req.query.secret || req.query.token || '') as string;
+  const querySecret = (req.query?.secret || req.query?.token || '') as string;
 
   if (cronSecret) {
     const isAuthorized = authHeader === cronSecret || querySecret === cronSecret || (shortcutToken && authHeader === shortcutToken);
@@ -50,47 +50,44 @@ export default async function handler(req: any, res: any) {
       day: '2-digit',
     }).format(new Date());
 
-    // 3. Smart skip check: verify if an expense was already logged today
+    // 3. Smart Skip Check
+    const skipIfLogged = req.query?.force !== 'true';
     const scriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL || process.env.VITE_GOOGLE_APPS_SCRIPT_URL;
+
     let hasExpenseToday = false;
 
-    // Check Google Apps Script for today's transactions
-    if (scriptUrl && scriptUrl.trim().length > 10) {
-      try {
-        const checkRes = await fetch(`${scriptUrl.trim()}?action=get_state`);
-        if (checkRes.ok) {
-          const json = await checkRes.json();
-          const txs = json.data?.transactions || json.transactions || [];
-          hasExpenseToday = txs.some(
-            (t: any) => t.type === 'expense' && t.date === istDateString && !t.deleted
-          );
-        }
-      } catch (err) {
-        console.warn('Smart skip check warning:', err);
+    // Check local database fallback
+    try {
+      const dbPath = path.resolve(process.cwd(), 'data', 'db.json');
+      if (fs.existsSync(dbPath)) {
+        const db = JSON.parse(fs.readFileSync(dbPath, 'utf8') || '{}');
+        const txs: any[] = db.transactions || [];
+        hasExpenseToday = txs.some(
+          (t) => t.date === istDateString && t.type === 'expense' && !t.deleted
+        );
       }
-    }
+    } catch {}
 
-    // Also check local database fallback if exists
-    if (!hasExpenseToday) {
+    // Check Google Apps Script live transactions
+    if (!hasExpenseToday && scriptUrl) {
       try {
-        const dbFile = path.resolve(process.cwd(), 'data', 'database.json');
-        if (fs.existsSync(dbFile)) {
-          const localData = JSON.parse(fs.readFileSync(dbFile, 'utf8') || '{}');
-          const txs = localData.transactions || [];
-          hasExpenseToday = txs.some(
-            (t: any) => t.type === 'expense' && t.date === istDateString && !t.deleted
-          );
+        const remoteRes = await fetch(`${scriptUrl.trim()}?action=get_all_data`);
+        if (remoteRes.ok) {
+          const json: any = await remoteRes.json();
+          if (json.success && Array.isArray(json.transactions)) {
+            hasExpenseToday = json.transactions.some(
+              (t: any) => t.date === istDateString && t.type === 'expense' && !t.deleted
+            );
+          }
         }
       } catch {}
     }
 
-    // Check if smart skip was requested (default is true unless force query param is present)
-    const isForced = req.query.force === 'true';
-    if (hasExpenseToday && !isForced) {
+    if (hasExpenseToday && skipIfLogged) {
       return res.status(200).json({
         success: true,
         skipped: true,
-        reason: `Expense already logged for today (${istDateString}) in Asia/Kolkata. Skipping reminder.`,
+        reason: `Expense already logged for today (${istDateString} IST). Reminder skipped.`,
       });
     }
 
@@ -107,7 +104,7 @@ export default async function handler(req: any, res: any) {
       try {
         const remoteRes = await fetch(`${scriptUrl.trim()}?action=get_push_subscriptions`);
         if (remoteRes.ok) {
-          const json = await remoteRes.json();
+          const json: any = await remoteRes.json();
           if (json.success && Array.isArray(json.subscriptions)) {
             subscriptions = json.subscriptions;
           }
@@ -118,54 +115,57 @@ export default async function handler(req: any, res: any) {
     if (subscriptions.length === 0) {
       return res.status(200).json({
         success: true,
-        message: 'No push subscriptions currently registered.',
-        skipped: true,
+        sentCount: 0,
+        message: 'No push subscriptions registered. Notification not sent.',
       });
     }
 
-    // 5. Send reminder notification to all registered devices
+    // 5. Send daily reminder notification
     const payload = JSON.stringify({
-      title: 'MSR Penny Reminder 🪙',
-      body: "Hey Soundhar! Don't forget to record your daily expenses for today.",
+      title: 'MSR Penny • Daily Reminder 📝',
+      body: 'Did you spend anything today? Tap to record your expenses before you sleep!',
       icon: '/pwa-192x192.png',
-      badge: '/favicon-32x32.png',
-      data: { url: '/#add-expense' },
+      badge: '/favicon.svg',
+      tag: 'msr-penny-daily-reminder',
+      data: {
+        url: '/',
+        date: istDateString,
+      },
     });
 
-    let sent = 0;
-    const errors: any[] = [];
-
-    for (const sub of subscriptions) {
+    let sentCount = 0;
+    const sendPromises = subscriptions.map(async (sub) => {
       try {
         await webpush.sendNotification(
           {
             endpoint: sub.endpoint,
-            keys: {
-              p256dh: sub.keys?.p256dh || sub.p256dh,
-              auth: sub.keys?.auth || sub.auth,
-            },
+            keys: sub.keys,
           },
           payload
         );
-        sent++;
+        sentCount++;
       } catch (err: any) {
-        errors.push({ endpoint: sub.endpoint, error: err?.message || String(err) });
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          console.warn('Subscription expired/unsubscribed:', sub.endpoint);
+        }
       }
-    }
+    });
+
+    await Promise.allSettled(sendPromises);
 
     return res.status(200).json({
       success: true,
-      sentCount: sent,
-      failedCount: errors.length,
-      totalCount: subscriptions.length,
-      dateIST: istDateString,
-      errors: errors.length > 0 ? errors : undefined,
+      sentCount,
+      totalSubscribers: subscriptions.length,
+      date: istDateString,
+      message: `Daily reminder delivered to ${sentCount} device(s).`,
     });
-  } catch (error: any) {
-    console.error('Cron reminder error:', error);
+  } catch (err: any) {
     return res.status(500).json({
       success: false,
-      error: error?.message || 'Failed to process daily reminder cron',
+      error: err.message || 'Error executing cron reminder',
     });
   }
 }
+
+export const reminderCronHandler = handler;

@@ -6,7 +6,7 @@
   "cleanUrls": true,
   "crons": [
     {
-      "path": "/api/cron/reminder",
+      "path": "/api/cron",
       "schedule": "30 15 * * *"
     }
   ],
@@ -28,8 +28,16 @@
       "destination": "/api/shortcut"
     },
     {
+      "source": "/api/cron/(.*)",
+      "destination": "/api/cron"
+    },
+    {
+      "source": "/api/push/(.*)",
+      "destination": "/api/push"
+    },
+    {
       "source": "/api/(.*)",
-      "destination": "/api/$1"
+      "destination": "/api/[...route]"
     },
     {
       "source": "/(.*)",

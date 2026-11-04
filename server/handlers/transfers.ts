@@ -22,7 +22,7 @@ export default async function handler(req: any, res: any) {
         const fetchUrl = `${scriptUrl}${scriptUrl.includes('?') ? '&' : '?'}action=get_transfers`;
         const remoteRes = await fetch(fetchUrl, { method: 'GET' });
         if (remoteRes.ok) {
-          const json = await remoteRes.json();
+          const json: any = await remoteRes.json();
           if (json.success && Array.isArray(json.transfers)) {
             return res.status(200).json({ success: true, transfers: json.transfers });
           }
@@ -59,7 +59,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const json = await remoteRes.json();
+        const json: any = await remoteRes.json();
         return res.status(json.success ? 200 : (json.notFound ? 404 : 500)).json(json);
       } catch (err: any) {
         return res.status(502).json({
@@ -107,7 +107,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const json = await remoteRes.json();
+        const json: any = await remoteRes.json();
         return res.status(json.success ? 200 : 500).json({
           success: json.success,
           transfer: tr,

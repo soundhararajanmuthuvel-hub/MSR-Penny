@@ -7,12 +7,11 @@ import { initialSeedData } from './src/data/initialData';
 import { DEFAULT_FAMILY_CONTACTS, calculateFamilyBalances } from './src/utils/familyMigration';
 import { DEFAULT_ACCOUNTS } from './src/utils/balanceCalculator';
 import shortcutHandler from './api/shortcut';
-import subscribeHandler from './api/push/subscribe';
-import testPushHandler from './api/push/test';
-import reminderCronHandler from './api/cron/reminder';
-import archiveHandler from './api/archive';
-import reconcileHandler from './api/reconcile';
-import healthHandler from './api/health';
+import { subscribeHandler, testPushHandler } from './api/push';
+import reminderCronHandler from './api/cron';
+import archiveHandler from './server/handlers/archive';
+import reconcileHandler from './server/handlers/reconcile';
+import healthHandler from './server/handlers/health';
 
 dotenv.config();
 

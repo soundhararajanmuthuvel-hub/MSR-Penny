@@ -21,7 +21,7 @@ export default async function handler(req: any, res: any) {
       const fetchUrl = `${scriptUrl}${scriptUrl.includes('?') ? '&' : '?'}action=get_all_data`;
       const remoteRes = await fetch(fetchUrl, { method: 'GET' });
       if (remoteRes.ok) {
-        const json = await remoteRes.json();
+        const json: any = await remoteRes.json();
         if (json.success) {
           return res.status(200).json({
             success: true,

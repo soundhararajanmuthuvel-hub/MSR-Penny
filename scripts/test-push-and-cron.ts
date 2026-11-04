@@ -6,9 +6,8 @@
  * - Smart Skip logic (Asia/Kolkata timezone expense check)
  */
 
-import reminderHandler from '../api/cron/reminder';
-import subscribeHandler from '../api/push/subscribe';
-import testPushHandler from '../api/push/test';
+import reminderHandler from '../api/cron';
+import { subscribeHandler, testPushHandler } from '../api/push';
 
 let passed = 0;
 let total = 0;

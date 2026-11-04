@@ -1,5 +1,5 @@
 // Vercel Serverless Function: /api/accounts
-import { DEFAULT_ACCOUNTS } from '../src/utils/balanceCalculator';
+import { DEFAULT_ACCOUNTS } from '../../src/utils/balanceCalculator';
 
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -24,7 +24,7 @@ export default async function handler(req: any, res: any) {
         const fetchUrl = `${scriptUrl}${scriptUrl.includes('?') ? '&' : '?'}action=get_accounts`;
         const remoteRes = await fetch(fetchUrl, { method: 'GET' });
         if (remoteRes.ok) {
-          const json = await remoteRes.json();
+          const json: any = await remoteRes.json();
           if (json.success && Array.isArray(json.accounts)) {
             return res.status(200).json({ success: true, accounts: json.accounts });
           }
@@ -61,7 +61,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const json = await remoteRes.json();
+        const json: any = await remoteRes.json();
         return res.status(json.success ? 200 : 500).json(json);
       } catch (err: any) {
         return res.status(502).json({

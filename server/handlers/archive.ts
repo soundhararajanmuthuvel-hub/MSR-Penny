@@ -25,7 +25,7 @@ export default async function handler(req: any, res: any) {
         const fetchUrl = `${scriptUrl}${scriptUrl.includes('?') ? '&' : '?'}action=get_settled_archive`;
         const remoteRes = await fetch(fetchUrl, { method: 'GET' });
         if (remoteRes.ok) {
-          const json = await remoteRes.json();
+          const json: any = await remoteRes.json();
           return res.status(200).json(json);
         }
       } catch (err: any) {
@@ -61,7 +61,7 @@ export default async function handler(req: any, res: any) {
             }),
           });
           if (remoteRes.ok) {
-            const json = await remoteRes.json();
+            const json: any = await remoteRes.json();
             return res.status(200).json(json);
           }
         } catch (err: any) {
@@ -85,7 +85,7 @@ export default async function handler(req: any, res: any) {
           }),
         });
         if (remoteRes.ok) {
-          const json = await remoteRes.json();
+          const json: any = await remoteRes.json();
           return res.status(200).json(json);
         }
       } catch (err: any) {
@@ -103,3 +103,4 @@ export default async function handler(req: any, res: any) {
 
   return res.status(405).json({ success: false, error: 'Method not allowed' });
 }
+

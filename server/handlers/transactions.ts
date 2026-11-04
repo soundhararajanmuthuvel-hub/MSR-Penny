@@ -41,7 +41,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const json = await remoteRes.json();
+        const json: any = await remoteRes.json();
         return res.status(json.success ? 200 : (json.notFound ? 404 : 500)).json(json);
       } catch (err: any) {
         return res.status(502).json({
@@ -110,7 +110,7 @@ export default async function handler(req: any, res: any) {
         });
       }
 
-      const json = await remoteRes.json();
+      const json: any = await remoteRes.json();
       if (!json.success) {
         return res.status(500).json({
           success: false,

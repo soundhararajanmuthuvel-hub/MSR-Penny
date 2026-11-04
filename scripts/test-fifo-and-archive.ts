@@ -303,3 +303,4 @@ if (passed === total) {
 console.log('======================================================\n');
 
 if (passed < total) process.exit(1);
+
