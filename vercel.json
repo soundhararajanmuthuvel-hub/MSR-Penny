@@ -4,6 +4,12 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "cleanUrls": true,
+  "crons": [
+    {
+      "path": "/api/cron/reminder",
+      "schedule": "30 15 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/shortcut",
