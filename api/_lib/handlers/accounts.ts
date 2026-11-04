@@ -1,5 +1,5 @@
 // Vercel Serverless Function: /api/accounts
-import { DEFAULT_ACCOUNTS } from '../../src/utils/balanceCalculator';
+import { DEFAULT_ACCOUNTS } from '../../../src/utils/balanceCalculator';
 
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');

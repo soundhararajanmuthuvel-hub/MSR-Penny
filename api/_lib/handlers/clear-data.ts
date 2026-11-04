@@ -1,4 +1,4 @@
-import { DEFAULT_FAMILY_CONTACTS } from '../../src/utils/familyMigration';
+import { DEFAULT_FAMILY_CONTACTS } from '../../../src/utils/familyMigration';
 
 // Vercel Serverless Function: POST /api/clear-data
 export default async function handler(req: any, res: any) {

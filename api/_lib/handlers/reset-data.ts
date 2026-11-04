@@ -1,4 +1,4 @@
-import { initialSeedData } from '../../src/data/initialData';
+import { initialSeedData } from '../../../src/data/initialData';
 
 // Vercel Serverless Function: POST /api/reset-data
 export default async function handler(req: any, res: any) {

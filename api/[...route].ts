@@ -1,20 +1,20 @@
 // Vercel Serverless Function: Catch-All Router for all Application Data Endpoints
 // Consolidates 14 separate handlers into a single serverless function to stay well within the Vercel Hobby 12-function limit.
 
-import stateHandler from '../server/handlers/state';
-import transactionsHandler from '../server/handlers/transactions';
-import contactsHandler from '../server/handlers/contacts';
-import accountsHandler from '../server/handlers/accounts';
-import transfersHandler from '../server/handlers/transfers';
-import archiveHandler from '../server/handlers/archive';
-import reconcileHandler from '../server/handlers/reconcile';
-import healthHandler from '../server/handlers/health';
-import freelanceHandler from '../server/handlers/freelance';
-import savingsHandler from '../server/handlers/savings';
-import settingsHandler from '../server/handlers/settings';
-import clearDataHandler from '../server/handlers/clear-data';
-import resetDataHandler from '../server/handlers/reset-data';
-import syncHandler from '../server/handlers/sync';
+import stateHandler from './_lib/handlers/state';
+import transactionsHandler from './_lib/handlers/transactions';
+import contactsHandler from './_lib/handlers/contacts';
+import accountsHandler from './_lib/handlers/accounts';
+import transfersHandler from './_lib/handlers/transfers';
+import archiveHandler from './_lib/handlers/archive';
+import reconcileHandler from './_lib/handlers/reconcile';
+import healthHandler from './_lib/handlers/health';
+import freelanceHandler from './_lib/handlers/freelance';
+import savingsHandler from './_lib/handlers/savings';
+import settingsHandler from './_lib/handlers/settings';
+import clearDataHandler from './_lib/handlers/clear-data';
+import resetDataHandler from './_lib/handlers/reset-data';
+import syncHandler from './_lib/handlers/sync';
 
 export default async function handler(req: any, res: any) {
   // CORS configuration

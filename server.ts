@@ -9,9 +9,9 @@ import { DEFAULT_ACCOUNTS } from './src/utils/balanceCalculator';
 import shortcutHandler from './api/shortcut';
 import { subscribeHandler, testPushHandler } from './api/push';
 import reminderCronHandler from './api/cron';
-import archiveHandler from './server/handlers/archive';
-import reconcileHandler from './server/handlers/reconcile';
-import healthHandler from './server/handlers/health';
+import archiveHandler from './api/_lib/handlers/archive';
+import reconcileHandler from './api/_lib/handlers/reconcile';
+import healthHandler from './api/_lib/handlers/health';
 
 dotenv.config();
 
