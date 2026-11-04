@@ -28,16 +28,24 @@
       "destination": "/api/shortcut"
     },
     {
+      "source": "/api/cron",
+      "destination": "/api/cron"
+    },
+    {
       "source": "/api/cron/(.*)",
       "destination": "/api/cron"
     },
     {
-      "source": "/api/push/(.*)",
+      "source": "/api/push",
       "destination": "/api/push"
     },
     {
+      "source": "/api/push/(.*)",
+      "destination": "/api/push?action=$1"
+    },
+    {
       "source": "/api/(.*)",
-      "destination": "/api/[...route]"
+      "destination": "/api/index?route=$1"
     },
     {
       "source": "/(.*)",

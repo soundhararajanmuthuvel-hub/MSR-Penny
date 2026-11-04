@@ -1,4 +1,9 @@
-import { DEFAULT_FAMILY_CONTACTS } from '../../../src/utils/familyMigration';
+const DEFAULT_FAMILY_CONTACTS = [
+  { id: 'family-appa', name: 'Appa', phoneNumber: '+919876543210', active: true, relationship: 'Father' },
+  { id: 'family-amma', name: 'Amma', phoneNumber: '+919876543211', active: true, relationship: 'Mother' },
+  { id: 'family-chinna-akka', name: 'Chinna Akka', phoneNumber: '+919876543212', active: true, relationship: 'Sister' },
+  { id: 'family-periya-akka', name: 'Periya Akka', phoneNumber: '+919876543213', active: true, relationship: 'Sister' },
+];
 
 // Vercel Serverless Function: POST /api/clear-data
 export default async function handler(req: any, res: any) {

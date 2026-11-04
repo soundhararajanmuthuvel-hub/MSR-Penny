@@ -1,5 +1,3 @@
-import { initialSeedData } from '../../../src/data/initialData';
-
 // Vercel Serverless Function: POST /api/reset-data
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -12,6 +10,6 @@ export default async function handler(req: any, res: any) {
 
   return res.status(200).json({
     success: true,
-    data: initialSeedData,
+    message: 'Reset data completed',
   });
 }
