@@ -1,7 +1,10 @@
 import { AppState } from '../types';
 import { DEFAULT_FAMILY_CONTACTS } from '../utils/familyMigration';
+import { DEFAULT_ACCOUNTS } from '../utils/balanceCalculator';
 
 export const initialSeedData: AppState = {
+  accounts: DEFAULT_ACCOUNTS,
+  transfers: [],
   familyContacts: DEFAULT_FAMILY_CONTACTS,
   transactions: [
     {

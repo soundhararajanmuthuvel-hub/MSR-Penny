@@ -50,6 +50,12 @@ export const CATEGORY_MAP: Record<TransactionCategory, CategoryVisual> = {
     bgClass: 'bg-[#ffdcc0]',
     textClass: 'text-[#894d00]',
   },
+  Reconciliation: {
+    name: 'Reconciliation',
+    icon: 'tune',
+    bgClass: 'bg-[#eff3ff]',
+    textClass: 'text-[#006948]',
+  },
   Other: {
     name: 'Other',
     icon: 'more_horiz',
