@@ -1,8 +1,24 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatPhoneNumberDisplay, normalizeWhatsAppNumber } from '../utils/phoneNormalizer';
+import {
+  subscribeToPushNotifications,
+  sendTestNotification,
+  isPushNotificationSupported,
+  getNotificationPermission,
+} from '../utils/webPush';
 
-export const ReportsScreen: React.FC = () => {
+interface ReportsScreenProps {
+  onOpenHealthModal?: () => void;
+  onOpenReconcileModal?: () => void;
+  onOpenAccountSettings?: () => void;
+}
+
+export const ReportsScreen: React.FC<ReportsScreenProps> = ({
+  onOpenHealthModal,
+  onOpenReconcileModal,
+  onOpenAccountSettings,
+}) => {
   const {
     state,
     totalIncome,
@@ -14,6 +30,12 @@ export const ReportsScreen: React.FC = () => {
     familyContacts,
     availableBalance,
     monthlyBudget,
+    sbiBalance,
+    iobBalance,
+    cashBalance,
+    totalAvailableMoney,
+    totalReceivable,
+    overallWorth,
     updateSettings,
     updateFamilyContact,
     syncWithGoogleSheets,
@@ -31,6 +53,23 @@ export const ReportsScreen: React.FC = () => {
   // Editing contact phone numbers
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
   const [phoneInput, setPhoneInput] = useState<string>('');
+
+  // Daily Reminder Notification State
+  const [reminderEnabled, setReminderEnabled] = useState<boolean>(
+    Boolean(state.settings?.reminderEnabled ?? true)
+  );
+  const [reminderTime, setReminderTime] = useState<string>(
+    state.settings?.reminderTime || '21:00'
+  );
+  const [skipIfExpenseLogged, setSkipIfExpenseLogged] = useState<boolean>(
+    Boolean(state.settings?.skipReminderIfExpenseLogged ?? true)
+  );
+  const [pushPermission, setPushPermission] = useState<NotificationPermission>(() => {
+    return typeof window !== 'undefined' ? getNotificationPermission() : 'default';
+  });
+  const [isEnablingPush, setIsEnablingPush] = useState<boolean>(false);
+  const [isSendingTestPush, setIsSendingTestPush] = useState<boolean>(false);
+  const [pushNotice, setPushNotice] = useState<string | null>(null);
 
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -99,6 +138,46 @@ export const ReportsScreen: React.FC = () => {
       cashPercent: Math.round((cashTotal / total) * 100),
     };
   }, [state.transactions]);
+
+  const handleEnablePush = async () => {
+    setIsEnablingPush(true);
+    setPushNotice(null);
+    const res = await subscribeToPushNotifications();
+    setIsEnablingPush(false);
+    setPushPermission(getNotificationPermission());
+    if (res.success) {
+      setPushNotice('Push notifications enabled for this device!');
+      await updateSettings({ reminderEnabled: true });
+      setReminderEnabled(true);
+    } else {
+      setPushNotice(res.error || 'Failed to enable notifications');
+    }
+    setTimeout(() => setPushNotice(null), 4000);
+  };
+
+  const handleSendTestPush = async () => {
+    setIsSendingTestPush(true);
+    setPushNotice(null);
+    const res = await sendTestNotification();
+    setIsSendingTestPush(false);
+    setPushNotice(res.message);
+    setTimeout(() => setPushNotice(null), 4000);
+  };
+
+  const handleToggleReminder = async (enabled: boolean) => {
+    setReminderEnabled(enabled);
+    await updateSettings({ reminderEnabled: enabled });
+  };
+
+  const handleSaveReminderTime = async (time: string) => {
+    setReminderTime(time);
+    await updateSettings({ reminderTime: time });
+  };
+
+  const handleToggleSmartSkip = async (skip: boolean) => {
+    setSkipIfExpenseLogged(skip);
+    await updateSettings({ skipReminderIfExpenseLogged: skip });
+  };
 
   const handleSaveBudget = async () => {
     const b = parseInt(budgetInput, 10);
@@ -207,6 +286,46 @@ export const ReportsScreen: React.FC = () => {
             <h2 className="text-[16px] font-bold text-[#121c2a]">Financial Reports & Settings</h2>
             <p className="text-[11px] text-[#3e4942]">Monthly statistics, family settlements & cloud sync</p>
           </div>
+        </div>
+      </div>
+
+      {/* Accounts & Liquid Net Worth Breakdown */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block">
+            Accounts & Worth
+          </span>
+          <span className="text-[12px] font-bold text-[#006948]">
+            Worth: ₹{overallWorth.toLocaleString('en-IN')}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          <div className="bg-[#eff3ff] p-2.5 rounded-xl border border-[#dfe9fc]/60 text-center">
+            <span className="text-[10px] text-[#3e4942] block">SBI Main</span>
+            <span className={`text-[15px] font-bold block mt-0.5 tabular-nums ${sbiBalance < 0 ? 'text-[#ba1a1a]' : 'text-[#121c2a]'}`}>
+              ₹{sbiBalance.toLocaleString('en-IN')}
+            </span>
+          </div>
+
+          <div className="bg-[#eff3ff] p-2.5 rounded-xl border border-[#dfe9fc]/60 text-center">
+            <span className="text-[10px] text-[#3e4942] block">IOB Secondary</span>
+            <span className={`text-[15px] font-bold block mt-0.5 tabular-nums ${iobBalance < 0 ? 'text-[#ba1a1a]' : 'text-[#121c2a]'}`}>
+              ₹{iobBalance.toLocaleString('en-IN')}
+            </span>
+          </div>
+
+          <div className="bg-[#eff3ff] p-2.5 rounded-xl border border-[#dfe9fc]/60 text-center">
+            <span className="text-[10px] text-[#3e4942] block">Cash Wallet</span>
+            <span className={`text-[15px] font-bold block mt-0.5 tabular-nums ${cashBalance < 0 ? 'text-[#ba1a1a]' : 'text-[#121c2a]'}`}>
+              ₹{cashBalance.toLocaleString('en-IN')}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between pt-1 border-t border-[#dfe9fc]/50 text-[11px] text-[#3e4942]">
+          <span>Total Available: <strong className="text-[#121c2a]">₹{totalAvailableMoney.toLocaleString('en-IN')}</strong></span>
+          <span>Family Receivable: <strong className="text-[#ac6200]">₹{totalReceivable.toLocaleString('en-IN')}</strong></span>
         </div>
       </div>
 
@@ -458,6 +577,101 @@ export const ReportsScreen: React.FC = () => {
         </div>
       </div>
 
+      {/* Daily Expense Reminder Notification Card (Section 7) */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[#006948] text-[20px]">notifications_active</span>
+            <div>
+              <span className="text-[13px] font-bold text-[#121c2a]">Daily Expense Reminder</span>
+              <p className="text-[11px] text-[#3e4942]">Web Push alerts via Vercel Cron (9:00 PM IST)</p>
+            </div>
+          </div>
+
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={reminderEnabled}
+              onChange={(e) => handleToggleReminder(e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-10 h-5 bg-[#dfe9fc] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#006948]"></div>
+          </label>
+        </div>
+
+        {/* Time Selector & Status */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
+              Reminder Time (IST)
+            </label>
+            <input
+              type="time"
+              value={reminderTime}
+              onChange={(e) => handleSaveReminderTime(e.target.value)}
+              className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[13px] font-semibold text-[#121c2a] focus:outline-none focus:border-[#006948]"
+            />
+          </div>
+
+          <div>
+            <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
+              Browser Permission
+            </label>
+            <div className="h-[38px] px-3 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl flex items-center justify-between">
+              <span className="text-[12px] font-semibold capitalize text-[#121c2a]">
+                {pushPermission === 'granted' ? 'Allowed' : pushPermission}
+              </span>
+              <span className={`w-2 h-2 rounded-full ${pushPermission === 'granted' ? 'bg-[#006948]' : 'bg-[#e07f00]'}`} />
+            </div>
+          </div>
+        </div>
+
+        {/* Smart Skip Toggle */}
+        <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/60 flex items-start gap-2.5">
+          <input
+            type="checkbox"
+            id="smartSkipToggle"
+            checked={skipIfExpenseLogged}
+            onChange={(e) => handleToggleSmartSkip(e.target.checked)}
+            className="mt-0.5 w-4 h-4 text-[#006948] rounded border-gray-300 focus:ring-[#006948]"
+          />
+          <label htmlFor="smartSkipToggle" className="text-[11px] text-[#3e4942] leading-tight cursor-pointer">
+            <strong>Smart Skip:</strong> Don't remind me if I have already recorded today's expenses.
+          </label>
+        </div>
+
+        {/* Action Buttons: Enable Notification & Send Test */}
+        <div className="flex gap-2">
+          {pushPermission !== 'granted' ? (
+            <button
+              type="button"
+              onClick={handleEnablePush}
+              disabled={isEnablingPush}
+              className="flex-1 py-2 bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-60"
+            >
+              <span className="material-symbols-outlined text-[16px]">notifications</span>
+              <span>{isEnablingPush ? 'Requesting...' : 'Enable Device Notifications'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSendTestPush}
+              disabled={isSendingTestPush}
+              className="flex-1 py-2 bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#006948] text-[12px] font-semibold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:opacity-60"
+            >
+              <span className="material-symbols-outlined text-[16px]">send</span>
+              <span>{isSendingTestPush ? 'Sending Test...' : 'Send Test Notification'}</span>
+            </button>
+          )}
+        </div>
+
+        {pushNotice && (
+          <p className="text-[11px] text-[#006948] font-semibold text-center bg-[#88f8c4]/30 py-1.5 rounded-lg border border-[#006948]/20">
+            {pushNotice}
+          </p>
+        )}
+      </div>
+
       {/* Google Sheets Dual-Sync Integration */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3">
         <div className="flex items-center justify-between">
@@ -525,6 +739,41 @@ export const ReportsScreen: React.FC = () => {
             {syncStatus}
           </p>
         )}
+      </div>
+
+      {/* Integrity, Diagnostics & Reconciliation Section */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3">
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined text-[#006948] text-[20px]">verified_user</span>
+          <span className="text-[13px] font-bold text-[#121c2a]">Data Integrity & Reconciliation</span>
+        </div>
+        <p className="text-[11px] text-[#3e4942]">
+          Verify zero balance drift, inspect LockService health, and reconcile bank SMS/cash discrepancies transparently.
+        </p>
+
+        <div className="grid grid-cols-2 gap-2">
+          {onOpenHealthModal && (
+            <button
+              type="button"
+              onClick={onOpenHealthModal}
+              className="py-2.5 bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#006948] text-[12px] font-semibold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px]">health_and_safety</span>
+              <span>Health Diagnostic</span>
+            </button>
+          )}
+
+          {onOpenReconcileModal && (
+            <button
+              type="button"
+              onClick={onOpenReconcileModal}
+              className="py-2.5 bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#121c2a] text-[12px] font-semibold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px] text-[#006948]">tune</span>
+              <span>Reconcile Balance</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Export & Data Backup */}

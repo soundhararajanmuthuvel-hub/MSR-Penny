@@ -4,9 +4,20 @@ import { useApp } from '../context/AppContext';
 interface ProfileModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenAccountSettings?: () => void;
+  onOpenPinSetup?: () => void;
+  onOpenDataHealth?: () => void;
+  onOpenReconcile?: () => void;
 }
 
-export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) => {
+export const ProfileModal: React.FC<ProfileModalProps> = ({
+  isOpen,
+  onClose,
+  onOpenAccountSettings,
+  onOpenPinSetup,
+  onOpenDataHealth,
+  onOpenReconcile,
+}) => {
   const { state, updateSettings, resetToSampleData, clearDemoData, syncWithGoogleSheets } = useApp();
   const [userName, setUserName] = useState(state.settings.userName || 'Soundhar');
   const [appaPhone, setAppaPhone] = useState(state.settings.appaPhoneNumber || '+919876543210');
@@ -162,6 +173,62 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
             >
               Save Profile
             </button>
+
+            {onOpenAccountSettings && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenAccountSettings();
+                }}
+                className="w-full py-2 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#006948] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[17px]">account_balance</span>
+                <span>Accounts & Opening Balances</span>
+              </button>
+            )}
+
+            {onOpenPinSetup && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenPinSetup();
+                }}
+                className="w-full py-2 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#121c2a] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[17px]">lock</span>
+                <span>Security PIN Lock</span>
+              </button>
+            )}
+
+            {onOpenDataHealth && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenDataHealth();
+                }}
+                className="w-full py-2 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#006948] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[17px]">health_and_safety</span>
+                <span>Data Health Diagnostics</span>
+              </button>
+            )}
+
+            {onOpenReconcile && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenReconcile();
+                }}
+                className="w-full py-2 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#121c2a] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[17px]">tune</span>
+                <span>Balance Reconciliation</span>
+              </button>
+            )}
 
             <button
               type="button"

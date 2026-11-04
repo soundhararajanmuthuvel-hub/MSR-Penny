@@ -78,6 +78,12 @@ export default async function handler(req: any, res: any) {
     tx.createdAt = new Date().toISOString();
   }
 
+  // Account default assignment
+  if (!tx.accountId) {
+    tx.accountId = (tx.paymentMethod || 'upi').toLowerCase() === 'cash' ? 'acc-cash' : 'acc-sbi';
+    tx.accountName = tx.accountId === 'acc-cash' ? 'Cash' : 'SBI (Main)';
+  }
+
   // Resolve target Google Apps Script URL
   const scriptUrl =
     req.body.googleAppsScriptUrl ||

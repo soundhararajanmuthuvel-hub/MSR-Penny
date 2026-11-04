@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { TransactionCategory, PaymentMethod, TransactionType, FamilyNotificationData } from '../types';
+import { isBeforeOpeningDate } from '../utils/balanceCalculator';
 
 interface AddTransactionModalProps {
   isOpen: boolean;
@@ -29,7 +30,15 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   initialType = 'expense',
   onShowAppaNotification,
 }) => {
-  const { addTransaction, familyContacts, familyBalances } = useApp();
+  const {
+    addTransaction,
+    familyContacts,
+    familyBalances,
+    accounts,
+    sbiBalance,
+    iobBalance,
+    cashBalance,
+  } = useApp();
 
   const activeContacts = familyContacts.filter((c) => c.active !== false);
 
@@ -39,7 +48,16 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   const [category, setCategory] = useState<TransactionCategory>('Travel');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('upi');
   const [date, setDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
-  
+
+  // Account selection with memory
+  const [selectedAccountId, setSelectedAccountId] = useState<string>(() => {
+    try {
+      return localStorage.getItem('msr_last_account') || 'acc-sbi';
+    } catch {
+      return 'acc-sbi';
+    }
+  });
+
   // Family settlements
   const [someoneWillRepayMe, setSomeoneWillRepayMe] = useState<boolean>(true);
   const [selectedContactId, setSelectedContactId] = useState<string>(
@@ -49,6 +67,14 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [isSuccess, setIsSuccess] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setTxType(initialType);
+      setIsSuccess(false);
+      setErrorMessage(null);
+    }
+  }, [isOpen, initialType]);
 
   if (!isOpen) return null;
 
@@ -60,6 +86,21 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   };
 
   const selectedContactBalance = familyBalances[selectedContact.id]?.outstandingBalance || 0;
+
+  // Selected Account details & balance
+  const accountList = accounts && accounts.length > 0 ? accounts : [];
+  const selectedAccount = accountList.find((a) => a.id === selectedAccountId) || accountList[0];
+
+  const currentAccountBal =
+    selectedAccountId === 'acc-sbi'
+      ? sbiBalance
+      : selectedAccountId === 'acc-iob'
+      ? iobBalance
+      : cashBalance;
+
+  // Overdraw check
+  const isOverdraw = txType === 'expense' && currentAccountBal - currentAmount < 0;
+  const isDatePreOpening = isBeforeOpeningDate(date, selectedAccount?.openingDate);
 
   const handleQuickAdd = (addVal: number) => {
     const next = currentAmount + addVal;
@@ -86,11 +127,17 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
     }
 
     if (txType === 'repayment' && selectedContactBalance > 0 && currentAmount > selectedContactBalance) {
-      // Allow it but warn
       const proceed = window.confirm(
         `Note: ₹${currentAmount} is greater than ${selectedContact.name}'s current outstanding balance of ₹${selectedContactBalance}. Record as advance settlement?`
       );
       if (!proceed) return;
+    }
+
+    if (isOverdraw) {
+      const proceedOverdraw = window.confirm(
+        `Overdraft Warning: This expense of ₹${currentAmount.toLocaleString('en-IN')} exceeds your current ${selectedAccount?.name || 'account'} balance of ₹${currentAccountBal.toLocaleString('en-IN')} (projected: -₹${(currentAmount - currentAccountBal).toLocaleString('en-IN')}). Proceed anyway?`
+      );
+      if (!proceedOverdraw) return;
     }
 
     setIsSubmitting(true);
@@ -114,6 +161,8 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
       category: txType === 'repayment' ? 'Family' : category,
       date,
       paymentMethod,
+      accountId: selectedAccountId,
+      accountName: selectedAccount?.name || 'SBI (Main)',
       isAppaReimbursable: selectedContact.id === 'family-appa' && isReimbursable,
       appaSettled: txType === 'repayment' && selectedContact.id === 'family-appa',
       isFamilyReimbursable: isReimbursable,
@@ -128,6 +177,8 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
       setErrorMessage(res.error || 'Failed to save transaction to database.');
       return;
     }
+
+    setIsSuccess(true);
 
     // When someone will repay me was enabled OR when recording repayment:
     // Show expense/repayment confirmation screen after successful save!
@@ -144,6 +195,8 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
           previousBalance: res.previousBalance,
           updatedBalance: res.updatedBalance,
           paymentMethod,
+          accountId: selectedAccountId,
+          accountName: selectedAccount?.name,
         });
       }
       onClose();
@@ -160,43 +213,38 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
           previousBalance: res.previousBalance,
           updatedBalance: res.updatedBalance,
           paymentMethod,
+          accountId: selectedAccountId,
+          accountName: selectedAccount?.name,
         });
       }
       onClose();
     } else {
-      // Personal expense or regular income without notification
-      setIsSuccess(true);
       setTimeout(() => {
-        setIsSuccess(false);
         onClose();
-      }, 700);
+      }, 500);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 backdrop-blur-xs flex justify-center items-start pt-safe pb-safe">
-      <div className="w-full max-w-md min-h-screen bg-[#f8f9ff] flex flex-col shadow-2xl relative">
-        {/* Header */}
-        <div className="h-16 px-4 flex items-center justify-between bg-[#f8f9ff]/90 backdrop-blur-md sticky top-0 z-10 border-b border-[#dfe9fc]/50">
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200">
+      <div className="bg-[#f8f9ff] w-full max-w-md rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl border border-[#dfe9fc]/80 max-h-[92vh] overflow-y-auto pb-safe">
+        {/* Top Handle / Close Bar */}
+        <div className="flex items-center justify-between pb-3 border-b border-[#dfe9fc]/50">
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-10 h-10 -ml-1 flex items-center justify-center rounded-full text-[#121c2a] hover:bg-[#dfe9fc]/50 transition-colors cursor-pointer"
-            >
-              <span className="material-symbols-outlined text-[22px]">arrow_back</span>
-            </button>
-            <h1 className="font-semibold text-[18px] text-[#121c2a] tracking-tight">
-              Add Transaction
-            </h1>
+            <span className="w-2.5 h-2.5 rounded-full bg-[#006948]" />
+            <h2 className="text-[17px] font-bold text-[#121c2a] tracking-tight">
+              {txType === 'expense' ? 'Add Expense' : txType === 'income' ? 'Add Income' : 'Record Repayment'}
+            </h2>
           </div>
-          <div className="w-8 h-8 rounded-full bg-[#006948] flex items-center justify-center text-white">
-            <span className="material-symbols-outlined text-[18px]">person</span>
-          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-full bg-white text-[#3e4942] hover:text-[#121c2a] flex items-center justify-center transition-colors shadow-2xs cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[20px]">close</span>
+          </button>
         </div>
 
-        {/* Content Form */}
-        <form onSubmit={handleSubmit} className="flex-1 px-4 py-4 space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4 pt-3">
           {/* Segmented Type Selector */}
           <div className="w-full bg-[#dfe9fc]/60 p-1 rounded-full flex items-center justify-between">
             <button
@@ -278,6 +326,96 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
             </div>
           </div>
 
+          {/* Account Selector (SBI / IOB / Cash) */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider">
+                {txType === 'income' ? 'RECEIVE INTO ACCOUNT' : 'PAY FROM ACCOUNT'}
+              </span>
+              <span className="text-[11px] text-[#006948] font-semibold">
+                Bal: ₹{currentAccountBal.toLocaleString('en-IN')}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              {accountList.map((acc) => {
+                const isSelected = selectedAccountId === acc.id;
+                const accBal =
+                  acc.id === 'acc-sbi'
+                    ? sbiBalance
+                    : acc.id === 'acc-iob'
+                    ? iobBalance
+                    : cashBalance;
+
+                return (
+                  <button
+                    key={acc.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedAccountId(acc.id);
+                      if (acc.id === 'acc-cash') {
+                        setPaymentMethod('cash');
+                      } else {
+                        setPaymentMethod('upi');
+                        try {
+                          localStorage.setItem('msr_last_account', acc.id);
+                        } catch {}
+                      }
+                      setErrorMessage(null);
+                    }}
+                    className={`p-2.5 rounded-xl border text-left transition-all active:scale-95 cursor-pointer flex flex-col justify-between ${
+                      isSelected
+                        ? 'bg-[#eff3ff] border-[#006948] shadow-xs'
+                        : 'bg-white border-[#dfe9fc]/70 hover:bg-[#f8f9ff]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span className="material-symbols-outlined text-[16px] text-[#006948]">
+                        {acc.type === 'cash' ? 'payments' : 'account_balance'}
+                      </span>
+                      {isSelected && (
+                        <span className="w-2 h-2 rounded-full bg-[#006948]" />
+                      )}
+                    </div>
+                    <div className="mt-1.5">
+                      <p className={`text-[12px] truncate ${isSelected ? 'font-bold text-[#121c2a]' : 'font-medium text-[#3e4942]'}`}>
+                        {acc.name}
+                      </p>
+                      <p className="text-[11px] font-semibold text-[#6d7a72] tabular-nums">
+                        ₹{accBal.toLocaleString('en-IN')}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Overdraw Warning */}
+          {isOverdraw && (
+            <div className="p-3 rounded-xl bg-[#fff2db] border border-[#ffdcc0] text-[#894d00] text-[12px] font-medium flex items-start gap-2.5 animate-in fade-in">
+              <span className="material-symbols-outlined text-[18px] text-[#e07f00] shrink-0 mt-0.5">
+                warning
+              </span>
+              <div>
+                <p className="font-bold">Overdraft Warning</p>
+                <p className="text-[11px] mt-0.5 leading-snug">
+                  This expense of ₹{currentAmount.toLocaleString('en-IN')} exceeds your current {selectedAccount?.name} balance (₹{currentAccountBal.toLocaleString('en-IN')}). Projected: -₹{(currentAmount - currentAccountBal).toLocaleString('en-IN')}.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Pre-Opening Date Warning */}
+          {isDatePreOpening && (
+            <div className="p-2.5 rounded-xl bg-[#fff2db] border border-[#ffdcc0] text-[#894d00] text-[11px] font-medium flex items-center gap-2">
+              <span className="material-symbols-outlined text-[16px] shrink-0">info</span>
+              <span>
+                Transaction date is before {selectedAccount?.name}'s opening date ({selectedAccount?.openingDate}). It will not affect current balances.
+              </span>
+            </div>
+          )}
+
           {/* Note / Description Field */}
           <div className="w-full bg-white rounded-xl p-3 shadow-xs border border-[#dfe9fc]/60 flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-[#e6eeff] flex items-center justify-center shrink-0 text-[#3e4942]">
@@ -347,7 +485,17 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
             <div className="bg-white p-1 rounded-xl shadow-xs border border-[#dfe9fc]/60 flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => setPaymentMethod('upi')}
+                onClick={() => {
+                  setPaymentMethod('upi');
+                  if (selectedAccountId === 'acc-cash') {
+                    try {
+                      const last = localStorage.getItem('msr_last_account') || 'acc-sbi';
+                      setSelectedAccountId(last !== 'acc-cash' ? last : 'acc-sbi');
+                    } catch {
+                      setSelectedAccountId('acc-sbi');
+                    }
+                  }
+                }}
                 className={`flex-1 py-1.5 rounded-lg text-[12px] font-semibold transition-all cursor-pointer ${
                   paymentMethod === 'upi'
                     ? 'bg-[#dfe9fc] text-[#121c2a]'
@@ -358,7 +506,10 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setPaymentMethod('cash')}
+                onClick={() => {
+                  setPaymentMethod('cash');
+                  setSelectedAccountId('acc-cash');
+                }}
                 className={`flex-1 py-1.5 rounded-lg text-[12px] font-semibold transition-all cursor-pointer ${
                   paymentMethod === 'cash'
                     ? 'bg-[#dfe9fc] text-[#121c2a]'

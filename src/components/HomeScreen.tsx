@@ -10,6 +10,10 @@ interface HomeScreenProps {
   onNavigateToSavings: () => void;
   onSelectTransaction: (tx: Transaction) => void;
   onOpenSyncModal: () => void;
+  onOpenTransfer?: () => void;
+  onOpenAccountSettings?: () => void;
+  onOpenHealthModal?: () => void;
+  onOpenReconcileModal?: () => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
@@ -19,23 +23,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onNavigateToSavings,
   onSelectTransaction,
   onOpenSyncModal,
+  onOpenTransfer,
+  onOpenAccountSettings,
+  onOpenHealthModal,
+  onOpenReconcileModal,
 }) => {
   const {
     state,
-    availableBalance,
     totalIncome,
     incomeCount,
     currentMonthSpent,
     totalFamilyOutstanding,
-    appaOwesMe,
     monthlyBudget,
     budgetUsedPercent,
     budgetRemaining,
     daysRemainingInMonth,
     syncWithGoogleSheets,
     refreshFromGoogleSheets,
-    clearDemoData,
-    isDemoDataLoaded,
+    sbiBalance,
+    iobBalance,
+    cashBalance,
+    totalAvailableMoney,
+    totalReceivable,
+    overallWorth,
   } = useApp();
 
   const [isSyncing, setIsSyncing] = useState(false);
@@ -70,7 +80,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }, 5000);
   };
 
-
   return (
     <div className="flex flex-col w-full gap-4 pb-8">
       {/* Top Greeting & Live Dual-Sync */}
@@ -87,20 +96,32 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
         </div>
 
-        <button
-          onClick={onOpenSyncModal}
-          className="flex items-center gap-1.5 bg-[#eff3ff] hover:bg-[#dfe9fc] px-3 py-1.5 rounded-full shadow-xs transition-colors cursor-pointer active:scale-95 border border-[#dfe9fc]/60"
-          title="Click to check Google Sheets sync status"
-        >
-          <span
-            className={`w-2 h-2 rounded-full ${
-              isSheetConfigured ? 'bg-[#006948] animate-pulse' : 'bg-[#e07f00]'
-            }`}
-          />
-          <span className="text-[10px] text-[#006948] font-bold uppercase tracking-wider">
-            {isSheetConfigured ? 'Sheets Connected' : 'Connect Sheets'}
-          </span>
-        </button>
+        <div className="flex items-center gap-1.5">
+          {onOpenHealthModal && (
+            <button
+              onClick={onOpenHealthModal}
+              className="w-8 h-8 rounded-full bg-[#eff3ff] hover:bg-[#dfe9fc] flex items-center justify-center text-[#006948] transition-colors cursor-pointer border border-[#dfe9fc]/60"
+              title="Data Health Diagnostics"
+            >
+              <span className="material-symbols-outlined text-[18px]">health_and_safety</span>
+            </button>
+          )}
+
+          <button
+            onClick={onOpenSyncModal}
+            className="flex items-center gap-1.5 bg-[#eff3ff] hover:bg-[#dfe9fc] px-3 py-1.5 rounded-full shadow-xs transition-colors cursor-pointer active:scale-95 border border-[#dfe9fc]/60"
+            title="Click to check Google Sheets sync status"
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isSheetConfigured ? 'bg-[#006948] animate-pulse' : 'bg-[#e07f00]'
+              }`}
+            />
+            <span className="text-[10px] text-[#006948] font-bold uppercase tracking-wider">
+              {isSheetConfigured ? 'Sheets Connected' : 'Connect Sheets'}
+            </span>
+          </button>
+        </div>
       </div>
 
       {/* Hero Available Balance Card */}
@@ -108,28 +129,117 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         <div className="absolute -right-6 -top-6 w-32 h-32 bg-[#006948]/5 rounded-full pointer-events-none" />
         <div className="relative z-10 flex flex-col gap-1">
           <div className="flex items-center justify-between">
-            <span className="text-[12px] text-[#3e4942] font-medium">Available Balance</span>
+            <span className="text-[12px] text-[#3e4942] font-medium">Total Available Money</span>
             <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-[#dfe9fc] text-[#121c2a] font-semibold">
-              This Month
+              Live Balance
             </span>
           </div>
 
           <div className="flex items-baseline gap-1 mt-1">
             <span className="text-[36px] font-bold text-[#121c2a] tracking-tight tabular-nums">
-              ₹{availableBalance.toLocaleString('en-IN')}
+              ₹{totalAvailableMoney.toLocaleString('en-IN')}
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-transparent text-[#3e4942]">
-            <span
-              className="material-symbols-outlined text-[16px] text-[#006948]"
-              style={{ fontVariationSettings: "'FILL' 1" }}
-            >
-              check_circle
+          <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-[#dfe9fc]/50 text-[#3e4942] text-[11px] justify-between">
+            <div className="flex items-center gap-1">
+              <span
+                className="material-symbols-outlined text-[16px] text-[#006948]"
+                style={{ fontVariationSettings: "'FILL' 1" }}
+              >
+                check_circle
+              </span>
+              <span>Receivable: ₹{totalReceivable.toLocaleString('en-IN')}</span>
+            </div>
+            <span className="font-semibold text-[#121c2a]">
+              Overall Worth: ₹{overallWorth.toLocaleString('en-IN')}
             </span>
-            <span className="text-[12px] text-[#3e4942] truncate">
-              Healthy reserve • Next freelance payout in 4 days
+          </div>
+        </div>
+      </div>
+
+      {/* Accounts & Balances Breakdown Card (SBI, IOB, Cash) */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/70 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-[#006948]/10 text-[#006948] flex items-center justify-center">
+              <span className="material-symbols-outlined text-[18px]">account_balance</span>
+            </div>
+            <div>
+              <h3 className="text-[13px] font-bold text-[#121c2a]">Accounts & Balances</h3>
+              <p className="text-[10px] text-[#3e4942]">Calculated from records • Zero balance drift</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {onOpenTransfer && (
+              <button
+                type="button"
+                onClick={onOpenTransfer}
+                className="px-2.5 py-1 rounded-lg bg-[#006948] hover:bg-[#00855d] text-white text-[11px] font-semibold flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                title="Transfer money between accounts"
+              >
+                <span className="material-symbols-outlined text-[14px]">swap_horiz</span>
+                <span>Transfer</span>
+              </button>
+            )}
+            {onOpenReconcileModal && (
+              <button
+                type="button"
+                onClick={onOpenReconcileModal}
+                className="h-7 px-2 rounded-lg border border-[#dfe9fc] hover:bg-[#eff3ff] text-[#006948] text-[11px] font-medium flex items-center gap-0.5 cursor-pointer transition-colors"
+                title="Reconcile balance discrepancies"
+              >
+                <span className="material-symbols-outlined text-[14px]">tune</span>
+                <span>Reconcile</span>
+              </button>
+            )}
+            {onOpenAccountSettings && (
+              <button
+                type="button"
+                onClick={onOpenAccountSettings}
+                className="w-7 h-7 rounded-lg border border-[#dfe9fc] hover:bg-[#eff3ff] text-[#3e4942] flex items-center justify-center cursor-pointer transition-colors"
+                title="Account Settings & Opening Balances"
+              >
+                <span className="material-symbols-outlined text-[15px]">settings</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 3 Fixed Accounts */}
+        <div className="grid grid-cols-3 gap-2">
+          {/* SBI */}
+          <div className="p-2.5 rounded-xl bg-[#f8f9ff] border border-[#dfe9fc]/60">
+            <span className="text-[10px] font-bold text-[#3e4942] block uppercase tracking-wider truncate">
+              SBI (Main)
             </span>
+            <span className="text-[15px] font-bold text-[#121c2a] block tabular-nums mt-0.5">
+              ₹{sbiBalance.toLocaleString('en-IN')}
+            </span>
+            <span className="text-[9px] text-[#006948] font-medium">Bank account</span>
+          </div>
+
+          {/* IOB */}
+          <div className="p-2.5 rounded-xl bg-[#f8f9ff] border border-[#dfe9fc]/60">
+            <span className="text-[10px] font-bold text-[#3e4942] block uppercase tracking-wider truncate">
+              IOB (Second)
+            </span>
+            <span className="text-[15px] font-bold text-[#121c2a] block tabular-nums mt-0.5">
+              ₹{iobBalance.toLocaleString('en-IN')}
+            </span>
+            <span className="text-[9px] text-[#006948] font-medium">Bank account</span>
+          </div>
+
+          {/* Cash */}
+          <div className="p-2.5 rounded-xl bg-[#f8f9ff] border border-[#dfe9fc]/60">
+            <span className="text-[10px] font-bold text-[#3e4942] block uppercase tracking-wider truncate">
+              Cash (Wallet)
+            </span>
+            <span className="text-[15px] font-bold text-[#121c2a] block tabular-nums mt-0.5">
+              ₹{cashBalance.toLocaleString('en-IN')}
+            </span>
+            <span className="text-[9px] text-[#006948] font-medium">Physical cash</span>
           </div>
         </div>
       </div>
@@ -358,117 +468,55 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             onClick={onNavigateToHistory}
             className="text-[12px] text-[#006948] font-semibold hover:underline cursor-pointer"
           >
-            View All
+            View all ({state.transactions.length})
           </button>
         </div>
 
-        {isDemoDataLoaded && (
-          <div className="bg-[#eff3ff] border border-[#dfe9fc] rounded-xl p-3 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="material-symbols-outlined text-[#006948] text-[18px] shrink-0">info</span>
-              <p className="text-[11px] text-[#3e4942] truncate">
-                Displaying sample student demo records.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (window.confirm('Clear sample transactions and start fresh? Your settings and webhook URL will remain saved.')) {
-                  clearDemoData(true);
-                }
-              }}
-              className="px-2.5 py-1 rounded-lg bg-white border border-[#ffb4ab] text-[#ba1a1a] text-[11px] font-semibold hover:bg-[#ffdad6]/40 shrink-0 cursor-pointer shadow-xs"
-            >
-              Clear Demo Data
-            </button>
-          </div>
-        )}
-
-        <div className="bg-white rounded-xl shadow-sm border border-[#dfe9fc]/50 overflow-hidden flex flex-col">
-          {recentTransactions.map((tx, idx) => {
+        <div className="flex flex-col gap-2">
+          {recentTransactions.map((tx) => {
             const visual = getTransactionIcon(tx);
-            const isNegative = tx.type === 'expense';
-            const isRepayment = tx.type === 'repayment';
+            const isRepay = tx.type === 'repayment';
+            const isIncome = tx.type === 'income';
 
             return (
-              <React.Fragment key={tx.id}>
-                <div
-                  onClick={() => onSelectTransaction(tx)}
-                  className="flex items-center justify-between p-3.5 hover:bg-[#eff3ff]/60 transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      className={`w-10 h-10 rounded-full ${visual.bgClass} flex items-center justify-center shrink-0`}
-                    >
-                      <span className={`material-symbols-outlined text-[20px] ${visual.textClass}`}>
-                        {visual.icon}
-                      </span>
-                    </div>
-
-                    <div className="min-w-0 flex flex-col">
-                      <p className="text-[14px] font-semibold text-[#121c2a] truncate">
-                        {tx.title}
-                      </p>
-                      <p
-                        className={`text-[12px] truncate ${
-                          tx.isAppaReimbursable ? 'text-[#894d00] font-medium' : 'text-[#3e4942]'
-                        }`}
-                      >
-                        {formatDateLabel(tx.date)} •{' '}
-                        {tx.isAppaReimbursable
-                          ? 'Claimed to Appa'
-                          : tx.type === 'income'
-                          ? 'Freelance Payout'
-                          : tx.category}
-                      </p>
-                    </div>
+              <div
+                key={tx.id}
+                onClick={() => onSelectTransaction(tx)}
+                className="bg-white rounded-xl p-3 flex items-center justify-between shadow-xs border border-[#dfe9fc]/50 hover:border-[#006948]/30 transition-all cursor-pointer"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${visual.bgClass}`}>
+                    <span className={`material-symbols-outlined text-[18px] ${visual.textClass}`}>
+                      {visual.icon}
+                    </span>
                   </div>
 
-                  <div className="text-right shrink-0 pl-2">
-                    <p
-                      className={`text-[14px] font-bold tabular-nums ${
-                        isRepayment
-                          ? 'text-[#006948]'
-                          : isNegative
-                          ? 'text-[#121c2a]'
-                          : 'text-[#006948]'
-                      }`}
-                    >
-                      {isNegative ? `- ₹${tx.amount}` : `+ ₹${tx.amount}`}
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-semibold text-[#121c2a] truncate">
+                      {tx.title}
                     </p>
-
-                    <span
-                      className={`text-[10px] font-medium ${
-                        tx.isAppaReimbursable
-                          ? 'text-[#894d00] font-semibold'
-                          : tx.milestoneTitle
-                          ? 'text-[#006948] font-semibold'
-                          : 'text-[#3e4942]'
-                      }`}
-                    >
-                      {tx.isAppaReimbursable
-                        ? 'Reimbursable'
-                        : tx.milestoneTitle
-                        ? tx.milestoneTitle
-                        : tx.paymentMethod === 'upi'
-                        ? 'UPI'
-                        : 'Cash'}
-                    </span>
+                    <p className="text-[11px] text-[#3e4942] truncate">
+                      {formatDateLabel(tx.date)} • {tx.category}
+                      {tx.accountName ? ` • ${tx.accountName}` : ''}
+                    </p>
                   </div>
                 </div>
 
-                {idx < recentTransactions.length - 1 && (
-                  <div className="h-px bg-[#dfe9fc]/60 mx-3.5" />
-                )}
-              </React.Fragment>
+                <div className="text-right shrink-0">
+                  <p
+                    className={`text-[14px] font-bold tabular-nums ${
+                      isIncome || isRepay ? 'text-[#006948]' : 'text-[#121c2a]'
+                    }`}
+                  >
+                    {isIncome || isRepay ? `+ ₹${tx.amount.toLocaleString('en-IN')}` : `₹${tx.amount.toLocaleString('en-IN')}`}
+                  </p>
+                  <span className="text-[9px] uppercase tracking-wider text-[#3e4942]">
+                    {tx.type}
+                  </span>
+                </div>
+              </div>
             );
           })}
-
-          {recentTransactions.length === 0 && (
-            <div className="py-8 text-center text-[#6d7a72] text-[13px]">
-              No transactions recorded yet. Tap + to add your first expense or income!
-            </div>
-          )}
         </div>
       </div>
     </div>

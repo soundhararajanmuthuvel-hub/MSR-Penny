@@ -5,7 +5,14 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { initialSeedData } from './src/data/initialData';
 import { DEFAULT_FAMILY_CONTACTS, calculateFamilyBalances } from './src/utils/familyMigration';
+import { DEFAULT_ACCOUNTS } from './src/utils/balanceCalculator';
 import shortcutHandler from './api/shortcut';
+import subscribeHandler from './api/push/subscribe';
+import testPushHandler from './api/push/test';
+import reminderCronHandler from './api/cron/reminder';
+import archiveHandler from './api/archive';
+import reconcileHandler from './api/reconcile';
+import healthHandler from './api/health';
 
 dotenv.config();
 
@@ -34,6 +41,12 @@ function readDb() {
     const data = JSON.parse(raw);
     if (!data.familyContacts || data.familyContacts.length === 0) {
       data.familyContacts = DEFAULT_FAMILY_CONTACTS;
+    }
+    if (!data.accounts || data.accounts.length === 0) {
+      data.accounts = DEFAULT_ACCOUNTS;
+    }
+    if (!data.transfers) {
+      data.transfers = [];
     }
     if (data.settings && !data.settings.appaPhoneNumber) {
       data.settings.appaPhoneNumber = '+919876543210';
@@ -73,6 +86,60 @@ app.all('/api/shortcuts/expense', async (req: Request, res: Response) => {
     req.body = { ...req.body, googleAppsScriptUrl: db.settings.googleAppsScriptUrl };
   }
   return shortcutHandler(req, res);
+});
+
+
+// Accounts
+app.get('/api/accounts', (req: Request, res: Response) => {
+  const db = readDb();
+  res.json({ success: true, accounts: db.accounts || DEFAULT_ACCOUNTS });
+});
+
+app.post('/api/accounts', (req: Request, res: Response) => {
+  const db = readDb();
+  const accounts = req.body?.accounts || req.body;
+  if (!Array.isArray(accounts)) {
+    return res.status(400).json({ success: false, error: 'Accounts array is required' });
+  }
+  db.accounts = accounts;
+  writeDb(db);
+  res.json({ success: true, accounts });
+});
+
+// Transfers
+app.get('/api/transfers', (req: Request, res: Response) => {
+  const db = readDb();
+  res.json({ success: true, transfers: db.transfers || [] });
+});
+
+app.post('/api/transfers', (req: Request, res: Response) => {
+  const db = readDb();
+  const tr = req.body;
+  if (!tr || !tr.amount || Number(tr.amount) <= 0 || !tr.fromAccountId || !tr.toAccountId) {
+    return res.status(400).json({ success: false, error: 'Positive amount and from/to accounts are required' });
+  }
+  if (!tr.id) tr.id = 'tr-' + Date.now();
+  if (!tr.createdAt) tr.createdAt = new Date().toISOString();
+  if (!db.transfers) db.transfers = [];
+  const existingIdx = db.transfers.findIndex((t: any) => t.id === tr.id);
+  if (existingIdx >= 0) {
+    db.transfers[existingIdx] = { ...db.transfers[existingIdx], ...tr };
+  } else {
+    db.transfers.unshift(tr);
+  }
+  writeDb(db);
+  res.json({ success: true, transfer: tr, transfers: db.transfers });
+});
+
+app.delete('/api/transfers', (req: Request, res: Response) => {
+  const db = readDb();
+  const id = req.query.id || req.body?.id;
+  if (!id) return res.status(400).json({ success: false, error: 'Transfer ID required' });
+  if (db.transfers) {
+    db.transfers = db.transfers.filter((t: any) => t.id !== id);
+  }
+  writeDb(db);
+  res.json({ success: true, transferId: id });
 });
 
 // Family Contacts
@@ -364,6 +431,16 @@ app.all('/api/shortcuts/expense', (req: Request, res: Response) => {
   }
   return shortcutHandler(req, res);
 });
+
+// Web Push & Cron Endpoints
+app.all('/api/push/subscribe', (req: Request, res: Response) => subscribeHandler(req as any, res as any));
+app.all('/api/push/test', (req: Request, res: Response) => testPushHandler(req as any, res as any));
+app.all('/api/cron/reminder', (req: Request, res: Response) => reminderCronHandler(req as any, res as any));
+
+// v3 Archive, Reconcile & Data Health Endpoints
+app.all('/api/archive', (req: Request, res: Response) => archiveHandler(req as any, res as any));
+app.all('/api/reconcile', (req: Request, res: Response) => reconcileHandler(req as any, res as any));
+app.all('/api/health', (req: Request, res: Response) => healthHandler(req as any, res as any));
 
 // Mount Vite in dev mode or serve static files in production
 async function startServer() {

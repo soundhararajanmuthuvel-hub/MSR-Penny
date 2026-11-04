@@ -17,6 +17,12 @@ import { ReportsScreen } from './components/ReportsScreen';
 import { TransactionDetailModal } from './components/TransactionDetailModal';
 import { SyncModal } from './components/SyncModal';
 import { ProfileModal } from './components/ProfileModal';
+import { AccountTransferModal } from './components/AccountTransferModal';
+import { AccountSettingsModal } from './components/AccountSettingsModal';
+import { PinLockModal } from './components/PinLockModal';
+import { PinSetupModal } from './components/PinSetupModal';
+import { DataHealthModal } from './components/DataHealthModal';
+import { BalanceReconciliationModal } from './components/BalanceReconciliationModal';
 import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { AppaNotificationModal } from './components/AppaNotificationModal';
 import { Transaction, TransactionType, AppaNotificationData } from './types';
@@ -24,7 +30,7 @@ import { Transaction, TransactionType, AppaNotificationData } from './types';
 type SubView = 'none' | 'appa' | 'savings';
 
 function MainApp() {
-  const { state } = useApp();
+  const { state, updateSettings } = useApp();
 
   const [currentTab, setCurrentTab] = useState<NavTab>('home');
   const [subView, setSubView] = useState<SubView>('none');
@@ -36,6 +42,14 @@ function MainApp() {
   const [isSyncOpen, setIsSyncOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [appaNotificationData, setAppaNotificationData] = useState<AppaNotificationData | null>(null);
+  const [isTransferOpen, setIsTransferOpen] = useState(false);
+  const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false);
+  const [isPinSetupOpen, setIsPinSetupOpen] = useState(false);
+  const [isHealthOpen, setIsHealthOpen] = useState(false);
+  const [isReconcileOpen, setIsReconcileOpen] = useState(false);
+  const [isLocked, setIsLocked] = useState<boolean>(() => {
+    return Boolean(state.settings?.pinLockEnabled && state.settings?.pinHash);
+  });
 
   useEffect(() => {
     const handleHash = () => {
@@ -130,7 +144,11 @@ function MainApp() {
         ) : currentTab === 'freelance' ? (
           <FreelanceScreen />
         ) : currentTab === 'reports' ? (
-          <ReportsScreen />
+          <ReportsScreen
+            onOpenHealthModal={() => setIsHealthOpen(true)}
+            onOpenReconcileModal={() => setIsReconcileOpen(true)}
+            onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
+          />
         ) : null}
       </main>
 

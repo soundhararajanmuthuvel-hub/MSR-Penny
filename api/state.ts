@@ -28,7 +28,11 @@ export default async function handler(req: any, res: any) {
             source: 'google_sheets',
             data: {
               transactions: json.transactions || [],
+              accounts: json.accounts || [],
+              transfers: json.transfers || [],
               familyContacts: json.familyContacts || [],
+              freelanceJobs: json.freelanceJobs || [],
+              savings: json.savings || undefined,
               settings: {
                 googleAppsScriptUrl: scriptUrl,
                 lastSyncedAt: json.timestamp || new Date().toISOString(),

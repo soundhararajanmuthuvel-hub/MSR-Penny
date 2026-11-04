@@ -30,6 +30,8 @@ export default async function handler(req: any, res: any) {
       action: 'sync_all',
       timestamp: new Date().toISOString(),
       transactions: req.body.transactions || [],
+      accounts: req.body.accounts || [],
+      transfers: req.body.transfers || [],
       familyContacts: req.body.familyContacts || [],
       freelanceJobs: req.body.freelanceJobs || [],
       savings: req.body.savings || {},

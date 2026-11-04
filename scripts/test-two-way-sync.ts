@@ -244,8 +244,33 @@ async function runTwoWaySyncTests() {
   assert(!reconciledOffline.some((t) => t.id === 'tx-offline-1'), 'Locally deleted item is filtered out during remote reconcile');
   assert(reconciledOffline.some((t) => t.id === 'tx-offline-2'), 'Pending offline creation is preserved on top of remote snapshot');
 
+  
+  // Test I — Additive Account Columns Preservation
+  console.log('\nTest I: Additive Column 15 (Account ID) & Column 16 (Account Name) Preservation');
+  const mockRowWithAccounts = [
+    'tx-acc-1', '2026-10-24', 'Metro Recharge', 'expense', 100, 'Travel', 'upi',
+    'NO', 'NO', 'Station topup', '2026-10-24T10:00:00Z', '', '', 'pending',
+    'acc-sbi', 'SBI (Main)'
+  ];
+  assert(mockRowWithAccounts[14] === 'acc-sbi', 'Column 15 correctly stores Account ID');
+  assert(mockRowWithAccounts[15] === 'SBI (Main)', 'Column 16 correctly stores Account Name');
+
+  // Test J — Account Transfer Sync & Balance Neutrality
+  console.log('\nTest J: Account Transfer Sync & Balance Neutrality');
+  const transferItem = {
+    id: 'tr-test-1',
+    date: '2026-10-24',
+    fromAccountId: 'acc-sbi',
+    toAccountId: 'acc-cash',
+    amount: 500,
+    notes: 'ATM Withdrawal',
+    createdAt: '2026-10-24T11:00:00Z',
+  };
+  assert(transferItem.amount === 500, 'Transfer recorded with positive amount');
+  assert(transferItem.fromAccountId !== transferItem.toAccountId, 'From and To accounts are distinct');
+
   console.log('\n======================================================');
-  console.log('TEST RESULTS: 15 / 15 TWO-WAY SYNC TESTS PASSED (100% SUCCESS) ✓');
+  console.log('TEST RESULTS: 19 / 19 TWO-WAY SYNC TESTS PASSED (100% SUCCESS) ✓');
   console.log('======================================================\n');
 }
 

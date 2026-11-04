@@ -8,8 +8,18 @@ import {
   PaymentMethod,
   FamilyContact,
   FamilyContactBalance,
+  Account,
+  Transfer,
+  SettledArchiveItem,
+  ReconciliationAdjustment,
 } from '../types';
+import {
+  runFifoRepaymentAllocation,
+  createSettledArchiveBatch,
+  restoreArchivedBatch,
+} from '../utils/fifoAllocation';
 import { initialSeedData } from '../data/initialData';
+import { DEFAULT_ACCOUNTS, calculateFinancialOverview } from '../utils/balanceCalculator';
 import {
   DEFAULT_FAMILY_CONTACTS,
   migrateAppaTransactions,
@@ -35,6 +45,22 @@ interface AppContextType {
   syncError: string | null;
   isSyncing: boolean;
 
+
+  // Accounts & Balances (Section 4 & 5)
+  accounts: Account[];
+  transfers: Transfer[];
+  sbiBalance: number;
+  iobBalance: number;
+  cashBalance: number;
+  totalAvailableMoney: number;
+  totalReceivable: number;
+  overallWorth: number;
+  datedBeforeOpeningWarnings: number;
+  unassignedTransactionsCount: number;
+
+  saveAccounts: (accounts: Account[]) => Promise<boolean>;
+  saveTransfer: (transfer: Omit<Transfer, 'id' | 'createdAt'>) => Promise<{ success: boolean; transfer?: Transfer; error?: string }>;
+  deleteTransfer: (id: string) => Promise<boolean>;
   // Computed Financial Metrics
   totalIncome: number;
   incomeCount: number;
@@ -68,8 +94,11 @@ interface AppContextType {
   recordFamilyRepayment: (
     contactId: string,
     amount: number,
-    paymentMethod: PaymentMethod,
-    note?: string
+    paymentMethod?: PaymentMethod,
+    note?: string,
+    accountId?: string,
+    accountName?: string,
+    date?: string
   ) => Promise<AddTransactionResult>;
 
   // Family Contacts Management
@@ -96,6 +125,18 @@ interface AppContextType {
   updateSavingsGoal: (goal: any) => Promise<boolean>;
   deleteSavingsGoal: (id: string) => Promise<boolean>;
 
+
+
+
+
+  // v3 Auto-Archive, Reconcile & Backup
+  settledArchive: SettledArchiveItem[];
+  reconciliations: ReconciliationAdjustment[];
+  archiveSettledContact: (contactId: string) => Promise<{ success: boolean; message: string; batchId?: string }>;
+  restoreArchiveBatch: (batchId: string) => Promise<{ success: boolean; message: string }>;
+  saveReconciliation: (rec: Omit<ReconciliationAdjustment, 'id' | 'createdAt'>) => Promise<{ success: boolean; message: string }>;
+  triggerManualBackup: () => Promise<{ success: boolean; backupName?: string; message: string }>;
+
   // Settings & Sync Actions
   updateSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
   refreshFromGoogleSheets: () => Promise<{ success: boolean; message: string; count?: number }>;
@@ -115,6 +156,8 @@ const getEffectiveEnvSettings = () => {
 };
 
 const defaultInitialState: AppState = {
+  accounts: DEFAULT_ACCOUNTS,
+  transfers: [],
   ...initialSeedData,
   familyContacts: DEFAULT_FAMILY_CONTACTS,
   settings: {
@@ -141,6 +184,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               : DEFAULT_FAMILY_CONTACTS);
 
         const { migratedTransactions } = migrateAppaTransactions(parsed.transactions || [], contacts);
+        const accounts = parsed.accounts && parsed.accounts.length > 0 ? parsed.accounts : DEFAULT_ACCOUNTS;
+        const transfers = parsed.transfers || [];
 
         return {
           ...parsed,
@@ -217,6 +262,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (res.ok && cType.includes('application/json')) {
         const json = await res.json();
         if (json.success && json.data) {
+          const remoteAccounts = Array.isArray(json.data.accounts) && json.data.accounts.length > 0 ? json.data.accounts : (state.accounts && state.accounts.length > 0 ? state.accounts : DEFAULT_ACCOUNTS);
+          const remoteTransfers = Array.isArray(json.data.transfers) ? json.data.transfers : (state.transfers || []);
           const remoteContacts = json.data.familyContacts && json.data.familyContacts.length > 0
             ? json.data.familyContacts
             : (state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS);
@@ -251,6 +298,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (res.ok) {
           const json = await res.json();
           if (json.success && Array.isArray(json.transactions)) {
+            const remoteAccounts = Array.isArray(json.accounts) && json.accounts.length > 0 ? json.accounts : (state.accounts && state.accounts.length > 0 ? state.accounts : DEFAULT_ACCOUNTS);
+            const remoteTransfers = Array.isArray(json.transfers) ? json.transfers : (state.transfers || []);
             const remoteContacts = json.familyContacts && json.familyContacts.length > 0
               ? json.familyContacts
               : (state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS);
@@ -286,6 +335,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Financial Calculations & Family Balances
   const calculations = useMemo(() => {
+    const finOverview = calculateFinancialOverview({
+      accounts: state.accounts || DEFAULT_ACCOUNTS,
+      transactions: state.transactions || [],
+      transfers: state.transfers || [],
+      familyContacts: state.familyContacts && state.familyContacts.length > 0 ? state.familyContacts : DEFAULT_FAMILY_CONTACTS,
+      freelanceJobs: state.freelanceJobs || [],
+      settledArchive: state.settledArchive || [],
+      reconciliations: state.reconciliations || [],
+    });
     const transactions = state.transactions || [];
     const contacts = state.familyContacts && state.familyContacts.length > 0
       ? state.familyContacts
@@ -359,6 +417,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const { migratedCount, needsReviewCount } = migrateAppaTransactions(transactions, contacts);
 
     return {
+      sbiBalance: finOverview.sbiBalance,
+      iobBalance: finOverview.iobBalance,
+      cashBalance: finOverview.cashBalance,
+      totalAvailableMoney: finOverview.totalAvailableMoney,
+      totalReceivable: finOverview.totalReceivable,
+      overallWorth: finOverview.overallWorth,
+      datedBeforeOpeningWarnings: finOverview.datedBeforeOpeningWarnings,
+      unassignedTransactionsCount: finOverview.unassignedTransactionsCount,
       totalIncome,
       incomeCount,
       currentMonthSpent,
@@ -380,7 +446,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       totalPendingAppaItemsCount,
       migrationStatus: { migratedCount, needsReviewCount },
     };
-  }, [state.transactions, state.familyContacts, state.settings?.monthlyBudget]);
+  }, [state.transactions, state.accounts, state.transfers, state.familyContacts, state.freelanceJobs, state.settings?.monthlyBudget]);
 
   // Add Transaction with verified Google Sheets persistence
   const addTransaction = async (txData: Omit<Transaction, 'id' | 'createdAt'>): Promise<AddTransactionResult> => {
@@ -428,7 +494,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       updatedContactBal = Math.max(0, prevContactBal - amt);
     }
 
+    const resolvedAccountId = txData.accountId || ((txData.paymentMethod || 'upi').toLowerCase() === 'cash' ? 'acc-cash' : 'acc-sbi');
+    const accList = state.accounts || DEFAULT_ACCOUNTS;
+    const targetAccount = accList.find((a) => a.id === resolvedAccountId) || accList[0];
+    const resolvedAccountName = txData.accountName || targetAccount?.name || 'SBI (Main)';
+
     const newTx: Transaction = {
+      accountId: resolvedAccountId,
+      accountName: resolvedAccountName,
       ...txData,
       id: 'tx-' + Date.now(),
       amount: amt,
@@ -655,7 +728,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     contactId: string,
     amount: number,
     paymentMethod: PaymentMethod = 'upi',
-    note?: string
+    note?: string,
+    accountId?: string,
+    accountName?: string,
+    date?: string
   ): Promise<AddTransactionResult> => {
     const contacts = state.familyContacts && state.familyContacts.length > 0
       ? state.familyContacts
@@ -675,8 +751,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       title,
       amount,
       category: 'Family',
-      date: new Date().toISOString().split('T')[0],
+      date: date || new Date().toISOString().split('T')[0],
       paymentMethod,
+      accountId,
+      accountName,
       isAppaReimbursable: contactId === 'family-appa',
       appaSettled: true,
       isFamilyReimbursable: false,
@@ -1055,6 +1133,218 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return true;
   };
 
+  const saveAccounts = async (accountsToSave: Account[]): Promise<boolean> => {
+    setState((prev) => ({
+      ...prev,
+      accounts: accountsToSave,
+    }));
+
+    try {
+      await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts: accountsToSave }),
+      });
+    } catch {}
+
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    if (scriptUrl) {
+      try {
+        await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'save_accounts',
+            accounts: accountsToSave,
+          }),
+        });
+      } catch (err: any) {
+        console.warn('Google Sheets accounts sync deferred:', err?.message);
+      }
+    }
+    return true;
+  };
+
+  const saveTransfer = async (transferData: Omit<Transfer, 'id' | 'createdAt'>): Promise<{ success: boolean; transfer?: Transfer; error?: string }> => {
+    const amt = Number(transferData.amount);
+    if (!amt || amt <= 0) {
+      return { success: false, error: 'Amount must be greater than zero.' };
+    }
+
+    const newTr: Transfer = {
+      ...transferData,
+      id: 'tr-' + Date.now(),
+      amount: amt,
+      createdAt: new Date().toISOString(),
+    };
+
+    setState((prev) => ({
+      ...prev,
+      transfers: [newTr, ...(prev.transfers || [])],
+    }));
+
+    try {
+      await fetch('/api/transfers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newTr),
+      });
+    } catch {}
+
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    if (scriptUrl) {
+      try {
+        await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'add_transfer',
+            transfer: newTr,
+          }),
+        });
+      } catch (err: any) {
+        console.warn('Google Sheets transfer save deferred:', err?.message);
+      }
+    }
+
+    return { success: true, transfer: newTr };
+  };
+
+  const deleteTransfer = async (id: string): Promise<boolean> => {
+    setState((prev) => ({
+      ...prev,
+      transfers: (prev.transfers || []).filter((t) => t.id !== id),
+    }));
+
+    try {
+      await fetch(`/api/transfers?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch {}
+
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    if (scriptUrl) {
+      try {
+        await fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'delete_transfer',
+            transferId: id,
+          }),
+        });
+      } catch (err: any) {
+        console.warn('Google Sheets transfer delete deferred:', err?.message);
+      }
+    }
+
+    return true;
+  };
+
+
+    const archiveSettledContact = async (contactId: string): Promise<{ success: boolean; message: string; batchId?: string }> => {
+    const { archiveItems, activeTransactionsToKeep, batchId } = createSettledArchiveBatch(contactId, state.transactions || []);
+    if (archiveItems.length === 0) {
+      return { success: false, message: 'No settled transactions found to archive.' };
+    }
+
+    setState((prev) => ({
+      ...prev,
+      transactions: activeTransactionsToKeep,
+      settledArchive: [...(prev.settledArchive || []), ...archiveItems],
+    }));
+
+    try {
+      const res = await fetch('/api/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'archive',
+          batchId,
+          contactId,
+          transactionIds: archiveItems.map((a) => a.originalTransactionId),
+        }),
+      });
+      if (res.ok) {
+        return { success: true, message: `Archived ${archiveItems.length} settled items to Settled_Archive.`, batchId };
+      }
+    } catch (err) {}
+
+    return { success: true, message: `Archived ${archiveItems.length} settled items.`, batchId };
+  };
+
+  const restoreArchiveBatch = async (batchId: string): Promise<{ success: boolean; message: string }> => {
+    const { restoredTransactions, remainingArchiveItems } = restoreArchivedBatch(
+      batchId,
+      state.transactions || [],
+      state.settledArchive || []
+    );
+
+    setState((prev) => ({
+      ...prev,
+      transactions: restoredTransactions,
+      settledArchive: remainingArchiveItems,
+    }));
+
+    try {
+      await fetch('/api/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore', batchId }),
+      });
+    } catch (err) {}
+
+    return { success: true, message: 'Transactions restored from archive.' };
+  };
+
+  const saveReconciliation = async (rec: Omit<ReconciliationAdjustment, 'id' | 'createdAt'>): Promise<{ success: boolean; message: string }> => {
+    const id = `rec-${Date.now()}`;
+    const newRec: ReconciliationAdjustment = {
+      ...rec,
+      id,
+      createdAt: new Date().toISOString(),
+    };
+
+    setState((prev) => ({
+      ...prev,
+      reconciliations: [...(prev.reconciliations || []), newRec],
+    }));
+
+    try {
+      await fetch('/api/reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reconciliation: newRec }),
+      });
+    } catch (err) {}
+
+    return { success: true, message: 'Reconciliation adjustment recorded.' };
+  };
+
+  const triggerManualBackup = async (): Promise<{ success: boolean; backupName?: string; message: string }> => {
+    const envDefaults = getEffectiveEnvSettings();
+    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
+    if (!scriptUrl) {
+      return { success: false, message: 'Google Apps Script Webhook URL not configured.' };
+    }
+
+    try {
+      const res = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'create_backup' }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        return { success: true, backupName: json.backupName, message: json.message || 'Backup sheet copy created!' };
+      }
+    } catch (err: any) {
+      return { success: false, message: err?.message || 'Failed to trigger backup' };
+    }
+    return { success: false, message: 'Backup request failed' };
+  };
+
   const updateSettings = async (settingsUpdate: Partial<AppSettings>) => {
     const updated = {
       ...state.settings,
@@ -1341,6 +1631,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         resetToSampleData,
         clearDemoData,
         isDemoDataLoaded,
+        accounts: state.accounts || DEFAULT_ACCOUNTS,
+        transfers: state.transfers || [],
+        saveAccounts,
+        saveTransfer,
+        deleteTransfer,
+        settledArchive: state.settledArchive || [],
+        reconciliations: state.reconciliations || [],
+        archiveSettledContact,
+        restoreArchiveBatch,
+        saveReconciliation,
+        triggerManualBackup,
       }}
     >
       {children}
