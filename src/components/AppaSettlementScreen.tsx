@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatDateLabel } from '../utils/categoryIcons';
-import { Transaction, FamilyNotificationData, FamilyContact, PaymentMethod } from '../types';
+import { Transaction, FamilyNotificationData, FamilyContact, PaymentMethod, SettledArchiveItem } from '../types';
 import {
   generateWhatsAppUrl,
   buildExpenseWhatsAppMessage,
 } from '../utils/familyMigration';
 import { normalizeWhatsAppNumber, formatPhoneNumberDisplay } from '../utils/phoneNormalizer';
+import { runFifoRepaymentAllocation } from '../utils/fifoAllocation';
 
 interface FamilySettlementScreenProps {
   onBack: () => void;
@@ -35,6 +36,13 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
     updateFamilyContact,
     updateTransaction,
     migrationStatus,
+    accounts,
+    sbiBalance,
+    iobBalance,
+    cashBalance,
+    settledArchive,
+    archiveSettledContact,
+    restoreArchiveBatch,
   } = useApp();
 
   const notifyHandler = onShowFamilyNotification || onShowAppaNotification;
@@ -42,13 +50,17 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [selectedMemberFilter, setSelectedMemberFilter] = useState<string>('all');
-  
+  const [activeTab, setActiveTab] = useState<'active' | 'archive'>('active');
+
   // Record Repayment Modal State
   const [showRepayModal, setShowRepayModal] = useState<boolean>(false);
   const [repayContactId, setRepayContactId] = useState<string>('family-appa');
   const [repayAmount, setRepayAmount] = useState<string>('200');
   const [repayMethod, setRepayMethod] = useState<PaymentMethod>('upi');
+  const [repayAccountId, setRepayAccountId] = useState<string>('acc-sbi');
+  const [repayDate, setRepayDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [repayNote, setRepayNote] = useState<string>('Settlement received');
+  const [isAdvanceAdjustment, setIsAdvanceAdjustment] = useState<boolean>(false);
   const [repayError, setRepayError] = useState<string | null>(null);
 
   // Add/Edit Contact Modal State
@@ -60,14 +72,54 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
   // Expand transactions for member
   const [expandedContactId, setExpandedContactId] = useState<string | null>(null);
 
+  // Auto-Archive Confirmation State
+  const [contactToArchive, setContactToArchive] = useState<FamilyContact | null>(null);
+  const [isArchiving, setIsArchiving] = useState<boolean>(false);
+
+  // Restore Confirmation State
+  const [batchToRestore, setBatchToRestore] = useState<string | null>(null);
+  const [isRestoring, setIsRestoring] = useState<boolean>(false);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
-    }, 3000);
+    }, 3500);
   };
 
   const activeContacts = familyContacts.filter((c) => c.active !== false);
+
+  // Run pure FIFO allocation across active transactions
+  const fifoResult = useMemo(() => {
+    return runFifoRepaymentAllocation(state.transactions || [], activeContacts);
+  }, [state.transactions, activeContacts]);
+
+  // Map of allocated transactions by id for quick lookup
+  const allocatedTxMap = useMemo(() => {
+    const map = new Map<string, Transaction>();
+    fifoResult.allocatedTransactions.forEach((tx) => {
+      map.set(tx.id, tx);
+    });
+    return map;
+  }, [fifoResult.allocatedTransactions]);
+
+  // Group archived items by batchId
+  const archiveBatches = useMemo(() => {
+    const batches: Record<string, { batchId: string; contactName: string; archivedAt: string; items: SettledArchiveItem[] }> = {};
+    (settledArchive || []).forEach((item) => {
+      const bId = item.archiveBatchId || 'batch-legacy';
+      if (!batches[bId]) {
+        batches[bId] = {
+          batchId: bId,
+          contactName: item.familyContactName || 'Family Contact',
+          archivedAt: item.archivedAt || new Date().toISOString(),
+          items: [],
+        };
+      }
+      batches[bId].items.push(item);
+    });
+    return Object.values(batches).sort((a, b) => new Date(b.archivedAt).getTime() - new Date(a.archivedAt).getTime());
+  }, [settledArchive]);
 
   // Filter transactions
   const allReimbursableTransactions = state.transactions.filter(
@@ -78,7 +130,10 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
     const contactBal = familyBalances[contactId]?.outstandingBalance || 0;
     setRepayContactId(contactId);
     setRepayAmount(contactBal > 0 ? String(contactBal) : '100');
+    setRepayDate(new Date().toISOString().split('T')[0]);
+    setRepayAccountId(repayMethod === 'cash' ? 'acc-cash' : 'acc-sbi');
     setRepayNote(`Settlement received`);
+    setIsAdvanceAdjustment(false);
     setRepayError(null);
     setShowRepayModal(true);
   };
@@ -94,18 +149,22 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
     const targetContact = familyContacts.find((c) => c.id === repayContactId);
     const contactBal = familyBalances[repayContactId]?.outstandingBalance || 0;
 
-    if (contactBal > 0 && amt > contactBal) {
-      const confirmAdvance = window.confirm(
-        `Amount ₹${amt} is greater than ${targetContact?.name || 'this member'}'s balance of ₹${contactBal}. Record as advance settlement?`
-      );
-      if (!confirmAdvance) return;
+    // Guardrail: Block repayment above outstanding unless explicit advance adjustment
+    if (contactBal > 0 && amt > contactBal && !isAdvanceAdjustment) {
+      setRepayError(`Amount ₹${amt.toLocaleString('en-IN')} exceeds outstanding balance of ₹${contactBal.toLocaleString('en-IN')}. Check "Confirm as advance settlement" below to allow.`);
+      return;
     }
+
+    const chosenAccount = accounts.find((a) => a.id === repayAccountId) || accounts[0];
 
     const res = await recordFamilyRepayment(
       repayContactId,
       amt,
       repayMethod,
-      repayNote
+      repayNote,
+      chosenAccount?.id,
+      chosenAccount?.name,
+      repayDate
     );
 
     setShowRepayModal(false);
@@ -115,7 +174,7 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
         type: 'repayment',
         title: repayMethod === 'cash' ? `Cash from ${res.contactName}` : `UPI from ${res.contactName}`,
         amount: amt,
-        date: new Date().toISOString().split('T')[0],
+        date: repayDate || new Date().toISOString().split('T')[0],
         contactId: repayContactId,
         contactName: res.contactName || targetContact?.name || 'Family Member',
         phoneNumber: targetContact?.phoneNumber,
@@ -124,9 +183,45 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
         paymentMethod: repayMethod,
       });
     } else if (res.success) {
-      showToast(`Recorded ₹${amt} repayment from ${res.contactName}!`);
+      showToast(`Recorded ₹${amt.toLocaleString('en-IN')} into ${chosenAccount?.name || 'Account'} from ${res.contactName}!`);
     } else {
       showToast(res.error || 'Failed to record repayment.');
+    }
+  };
+
+  const handleConfirmArchive = async () => {
+    if (!contactToArchive) return;
+    setIsArchiving(true);
+    try {
+      const res = await archiveSettledContact(contactToArchive.id);
+      if (res.success) {
+        showToast(res.message || `Archived settled transactions for ${contactToArchive.name}!`);
+      } else {
+        showToast(res.message || 'Archiving failed.');
+      }
+    } catch {
+      showToast('Error archiving transactions.');
+    } finally {
+      setIsArchiving(false);
+      setContactToArchive(null);
+    }
+  };
+
+  const handleConfirmRestore = async () => {
+    if (!batchToRestore) return;
+    setIsRestoring(true);
+    try {
+      const res = await restoreArchiveBatch(batchToRestore);
+      if (res.success) {
+        showToast(res.message || 'Restored transactions to active ledger!');
+      } else {
+        showToast(res.message || 'Restore failed.');
+      }
+    } catch {
+      showToast('Error restoring transactions.');
+    } finally {
+      setIsRestoring(false);
+      setBatchToRestore(null);
     }
   };
 
@@ -151,6 +246,7 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
     const cleanPhone = normalizeWhatsAppNumber(contact.phoneNumber);
     const url = generateWhatsAppUrl(cleanPhone, text);
     window.open(url, '_blank');
+    showToast(`WhatsApp draft for ${contact.name} opened. Review & send manually in WhatsApp.`);
   };
 
   const handleCopySummary = (contact: FamilyContact) => {
@@ -197,13 +293,16 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
       ...tx,
       appaSettled: true,
       settlementStatus: 'settled',
+      outstandingAmount: 0,
+      repaidSoFar: tx.amount,
+      allocationStatus: 'settled',
     });
     showToast(`Marked "${tx.title}" as settled!`);
   };
 
   return (
     <div className="flex flex-col w-full gap-4 pb-28">
-      {/* Top Relationship Context Pill */}
+      {/* Top Header & Relationship Context Pill */}
       <div className="flex items-center justify-between bg-[#eff3ff] px-4 py-2.5 rounded-xl border border-[#dfe9fc]/60">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-full bg-[#d9e3f6] flex items-center justify-center text-[#006948]">
@@ -211,7 +310,7 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
           </div>
           <div>
             <span className="text-[12px] font-semibold text-[#121c2a]">Family Settlements</span>
-            <p className="text-[11px] text-[#3e4942]">Single-user private offline tracking</p>
+            <p className="text-[11px] text-[#3e4942]">FIFO tracking • Exact ₹0 auto-archive</p>
           </div>
         </div>
 
@@ -229,6 +328,40 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
         </button>
       </div>
 
+      {/* Segmented View Switcher: Active Ledger vs Settled Archive */}
+      <div className="flex bg-[#eff3ff] p-1 rounded-xl border border-[#dfe9fc]">
+        <button
+          type="button"
+          onClick={() => setActiveTab('active')}
+          className={`flex-1 py-1.5 rounded-lg text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            activeTab === 'active'
+              ? 'bg-white text-[#006948] shadow-xs'
+              : 'text-[#3e4942] hover:text-[#121c2a]'
+          }`}
+        >
+          <span className="material-symbols-outlined text-[16px]">account_balance_wallet</span>
+          <span>Active Ledger</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('archive')}
+          className={`flex-1 py-1.5 rounded-lg text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            activeTab === 'archive'
+              ? 'bg-white text-[#006948] shadow-xs'
+              : 'text-[#3e4942] hover:text-[#121c2a]'
+          }`}
+        >
+          <span className="material-symbols-outlined text-[16px]">inventory_2</span>
+          <span>Settled Archive</span>
+          {settledArchive?.length > 0 && (
+            <span className="px-1.5 py-0.2 bg-[#006948]/10 text-[#006948] text-[10px] rounded-full font-bold">
+              {settledArchive.length}
+            </span>
+          )}
+        </button>
+      </div>
+
       {/* Migration Notice Pill if records were migrated */}
       {migrationStatus.needsReviewCount > 0 && (
         <div className="bg-[#fff8e1] border border-[#ffe082] rounded-xl p-3 flex items-center justify-between text-[11px] text-[#8d6e63]">
@@ -241,287 +374,578 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
         </div>
       )}
 
-      {/* Hero Summary Card: Total Family Outstanding */}
-      <div className="relative overflow-hidden bg-white rounded-2xl p-5 shadow-sm border border-[#dfe9fc]/70">
-        <div className="absolute -right-6 -bottom-6 w-32 h-32 rounded-full bg-[#006948]/5 pointer-events-none" />
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] text-[#3e4942] uppercase tracking-wider font-semibold">
-            Total Family Owes Me
-          </span>
-          <span className="inline-flex items-center gap-1 bg-[#006948]/10 text-[#006948] px-2.5 py-0.5 rounded-full text-[10px] font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#006948]" />
-            All Members Combined
-          </span>
-        </div>
+      {/* TAB 1: ACTIVE LEDGER VIEW */}
+      {activeTab === 'active' && (
+        <>
+          {/* Hero Summary Card: Total Family Outstanding */}
+          <div className="relative overflow-hidden bg-white rounded-2xl p-5 shadow-sm border border-[#dfe9fc]/70">
+            <div className="absolute -right-6 -bottom-6 w-32 h-32 rounded-full bg-[#006948]/5 pointer-events-none" />
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] text-[#3e4942] uppercase tracking-wider font-semibold">
+                Total Family Owes Me
+              </span>
+              <span className="inline-flex items-center gap-1 bg-[#006948]/10 text-[#006948] px-2.5 py-0.5 rounded-full text-[10px] font-semibold">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#006948]" />
+                All Members Combined
+              </span>
+            </div>
 
-        <div className="flex items-baseline gap-1 my-1">
-          <span className="text-[36px] font-bold text-[#121c2a] tracking-tight tabular-nums">
-            ₹{totalFamilyOutstanding.toLocaleString('en-IN')}
-          </span>
-          <span className="text-[12px] text-[#3e4942]">outstanding</span>
-        </div>
+            <div className="flex items-baseline gap-1 my-1">
+              <span className="text-[36px] font-bold text-[#121c2a] tracking-tight tabular-nums">
+                ₹{totalFamilyOutstanding.toLocaleString('en-IN')}
+              </span>
+              <span className="text-[12px] text-[#3e4942]">outstanding</span>
+            </div>
 
-        <div className="mt-3 pt-2 flex items-center justify-between bg-[#eff3ff]/70 px-3.5 py-2.5 rounded-xl border border-[#dfe9fc]/50">
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-[#006948] text-[18px]">verified</span>
-            <span className="text-[12px] text-[#121c2a]">
-              {activeContacts.length} active family contacts configured
-            </span>
+            <div className="mt-3 pt-2 flex items-center justify-between bg-[#eff3ff]/70 px-3.5 py-2.5 rounded-xl border border-[#dfe9fc]/50">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[#006948] text-[18px]">verified</span>
+                <span className="text-[12px] text-[#121c2a]">
+                  {activeContacts.length} active family contacts configured
+                </span>
+              </div>
+              {addExpenseHandler && (
+                <button
+                  onClick={addExpenseHandler}
+                  className="flex items-center gap-1 text-[11px] bg-[#006948] hover:bg-[#00855d] text-white px-2.5 py-1 rounded-lg font-semibold transition-colors cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-[15px]">add</span>
+                  <span>Claim Expense</span>
+                </button>
+              )}
+            </div>
           </div>
-          {addExpenseHandler && (
-            <button
-              onClick={addExpenseHandler}
-              className="flex items-center gap-1 text-[11px] bg-[#006948] hover:bg-[#00855d] text-white px-2.5 py-1 rounded-lg font-semibold transition-colors cursor-pointer"
-            >
-              <span className="material-symbols-outlined text-[15px]">add</span>
-              <span>Claim Expense</span>
-            </button>
+
+          {/* 3 Metric Breakdown Row */}
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-white p-3 rounded-xl flex flex-col shadow-xs border border-[#dfe9fc]/50">
+              <div className="flex items-center gap-1 text-[#3e4942] mb-1">
+                <span className="material-symbols-outlined text-[15px]">arrow_outward</span>
+                <span className="text-[10px] font-medium">Total Paid</span>
+              </div>
+              <span className="text-[17px] font-bold text-[#121c2a] tabular-nums">
+                ₹{totalFamilyExpensesWaiting.toLocaleString('en-IN')}
+              </span>
+              <span className="text-[10px] text-[#3e4942] mt-0.5">Family expenses</span>
+            </div>
+
+            <div className="bg-white p-3 rounded-xl flex flex-col shadow-xs border border-[#dfe9fc]/50">
+              <div className="flex items-center gap-1 text-[#006948] mb-1">
+                <span className="material-symbols-outlined text-[15px]">arrow_downward</span>
+                <span className="text-[10px] font-medium">Repaid</span>
+              </div>
+              <span className="text-[17px] font-bold text-[#006948] tabular-nums">
+                ₹{totalFamilyRepaid.toLocaleString('en-IN')}
+              </span>
+              <span className="text-[10px] text-[#3e4942] mt-0.5">Received back</span>
+            </div>
+
+            <div className="bg-[#dfe9fc] p-3 rounded-xl flex flex-col shadow-xs border border-[#bdcac0]/40">
+              <div className="flex items-center gap-1 text-[#894d00] mb-1">
+                <span className="material-symbols-outlined text-[15px]">hourglass_top</span>
+                <span className="text-[10px] font-medium">Remaining</span>
+              </div>
+              <span className="text-[17px] font-bold text-[#894d00] tabular-nums">
+                ₹{totalFamilyOutstanding.toLocaleString('en-IN')}
+              </span>
+              <span className="text-[10px] text-[#894d00] font-semibold mt-0.5">Balance</span>
+            </div>
+          </div>
+
+          {/* Auto-Archive Action Prompt Banners for fully settled contacts */}
+          {fifoResult.fullySettledContactIds.length > 0 && (
+            <div className="space-y-2">
+              {fifoResult.fullySettledContactIds.map((settledId) => {
+                const contact = activeContacts.find((c) => c.id === settledId);
+                if (!contact) return null;
+                const contactFifo = fifoResult.contactBalances[settledId];
+
+                return (
+                  <div
+                    key={`settle-banner-${settledId}`}
+                    className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="material-symbols-outlined text-[20px]">task_alt</span>
+                      </div>
+                      <div>
+                        <h4 className="text-[13px] font-bold text-emerald-900">
+                          {contact.name} is Fully Settled! (₹0 Outstanding)
+                        </h4>
+                        <p className="text-[11px] text-emerald-700 mt-0.5 leading-snug">
+                          All ₹{contactFifo?.totalPaidOnBehalf?.toLocaleString('en-IN')} in expenses have been completely repaid.
+                          Archive settled records to keep your active ledger tidy?
+                        </p>
+                        <p className="text-[10px] text-emerald-600 mt-1 font-medium">
+                          ✓ Balance invariant: Moving to Settled_Archive will NOT alter your SBI, IOB, or Cash balances.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setContactToArchive(contact)}
+                      className="self-end sm:self-center px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-[12px] font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">archive</span>
+                      <span>Archive to Settled_Archive</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           )}
-        </div>
-      </div>
 
-      {/* 3 Metric Breakdown Row */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-white p-3 rounded-xl flex flex-col shadow-xs border border-[#dfe9fc]/50">
-          <div className="flex items-center gap-1 text-[#3e4942] mb-1">
-            <span className="material-symbols-outlined text-[15px]">arrow_outward</span>
-            <span className="text-[10px] font-medium">Total Paid</span>
-          </div>
-          <span className="text-[17px] font-bold text-[#121c2a] tabular-nums">
-            ₹{totalFamilyExpensesWaiting.toLocaleString('en-IN')}
-          </span>
-          <span className="text-[10px] text-[#3e4942] mt-0.5">Family expenses</span>
-        </div>
-
-        <div className="bg-white p-3 rounded-xl flex flex-col shadow-xs border border-[#dfe9fc]/50">
-          <div className="flex items-center gap-1 text-[#006948] mb-1">
-            <span className="material-symbols-outlined text-[15px]">arrow_downward</span>
-            <span className="text-[10px] font-medium">Repaid</span>
-          </div>
-          <span className="text-[17px] font-bold text-[#006948] tabular-nums">
-            ₹{totalFamilyRepaid.toLocaleString('en-IN')}
-          </span>
-          <span className="text-[10px] text-[#3e4942] mt-0.5">Received back</span>
-        </div>
-
-        <div className="bg-[#dfe9fc] p-3 rounded-xl flex flex-col shadow-xs border border-[#bdcac0]/40">
-          <div className="flex items-center gap-1 text-[#894d00] mb-1">
-            <span className="material-symbols-outlined text-[15px]">hourglass_top</span>
-            <span className="text-[10px] font-medium">Remaining</span>
-          </div>
-          <span className="text-[17px] font-bold text-[#894d00] tabular-nums">
-            ₹{totalFamilyOutstanding.toLocaleString('en-IN')}
-          </span>
-          <span className="text-[10px] text-[#894d00] font-semibold mt-0.5">Balance</span>
-        </div>
-      </div>
-
-      {/* Member Filter Chips */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-        <button
-          onClick={() => setSelectedMemberFilter('all')}
-          className={`px-3 py-1.5 rounded-full text-[11px] font-semibold whitespace-nowrap transition-all cursor-pointer ${
-            selectedMemberFilter === 'all'
-              ? 'bg-[#006948] text-white shadow-xs'
-              : 'bg-[#eff3ff] text-[#3e4942] hover:bg-[#dfe9fc]'
-          }`}
-        >
-          All Members ({activeContacts.length})
-        </button>
-        {activeContacts.map((c) => {
-          const bal = familyBalances[c.id]?.outstandingBalance || 0;
-          return (
+          {/* Member Filter Chips */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
             <button
-              key={c.id}
-              onClick={() => setSelectedMemberFilter(c.id)}
-              className={`px-3 py-1.5 rounded-full text-[11px] font-semibold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1 ${
-                selectedMemberFilter === c.id
+              onClick={() => setSelectedMemberFilter('all')}
+              className={`px-3 py-1.5 rounded-full text-[11px] font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                selectedMemberFilter === 'all'
                   ? 'bg-[#006948] text-white shadow-xs'
                   : 'bg-[#eff3ff] text-[#3e4942] hover:bg-[#dfe9fc]'
               }`}
             >
-              <span>{c.name}</span>
-              <span className="text-[10px] opacity-80">(₹{bal})</span>
+              All Members ({activeContacts.length})
             </button>
-          );
-        })}
-      </div>
+            {activeContacts.map((c) => {
+              const bal = familyBalances[c.id]?.outstandingBalance || 0;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => setSelectedMemberFilter(c.id)}
+                  className={`px-3 py-1.5 rounded-full text-[11px] font-semibold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1 ${
+                    selectedMemberFilter === c.id
+                      ? 'bg-[#006948] text-white shadow-xs'
+                      : 'bg-[#eff3ff] text-[#3e4942] hover:bg-[#dfe9fc]'
+                  }`}
+                >
+                  <span>{c.name}</span>
+                  <span className="text-[10px] opacity-80">(₹{bal})</span>
+                </button>
+              );
+            })}
+          </div>
 
-      {/* Family Member Cards List */}
-      <div className="space-y-3">
-        {activeContacts
-          .filter((c) => selectedMemberFilter === 'all' || selectedMemberFilter === c.id)
-          .map((contact) => {
-            const bal = familyBalances[contact.id] || {
-              contact,
-              totalReimbursable: 0,
-              totalRepaid: 0,
-              outstandingBalance: 0,
-              pendingCount: 0,
-            };
+          {/* Family Member Cards List */}
+          <div className="space-y-3">
+            {activeContacts
+              .filter((c) => selectedMemberFilter === 'all' || selectedMemberFilter === c.id)
+              .map((contact) => {
+                const bal = familyBalances[contact.id] || {
+                  contact,
+                  totalReimbursable: 0,
+                  totalRepaid: 0,
+                  outstandingBalance: 0,
+                  pendingCount: 0,
+                };
 
-            const isExpanded = expandedContactId === contact.id;
+                const isExpanded = expandedContactId === contact.id;
 
-            const memberTransactions = allReimbursableTransactions.filter((t) => {
-              if (t.familyContactId === contact.id) return true;
-              if (contact.id === 'family-appa' && !t.familyContactId && (t.isAppaReimbursable || t.type === 'repayment')) {
-                return true;
-              }
-              return false;
-            });
+                const memberTransactions = allReimbursableTransactions.filter((t) => {
+                  if (t.familyContactId === contact.id) return true;
+                  if (contact.id === 'family-appa' && !t.familyContactId && (t.isAppaReimbursable || t.type === 'repayment')) {
+                    return true;
+                  }
+                  return false;
+                });
 
-            return (
-              <div
-                key={contact.id}
-                className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3 hover:border-[#006948]/30 transition-all"
-              >
-                {/* Member Header */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-[#006948]/10 text-[#006948] font-bold text-[16px] flex items-center justify-center">
-                      {contact.name.charAt(0)}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-[15px] font-bold text-[#121c2a]">{contact.name}</h3>
-                        <span
-                          className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                            bal.outstandingBalance > 0
-                              ? 'bg-[#fed7aa] text-[#9a3412]'
-                              : 'bg-[#88f8c4]/40 text-[#006948]'
-                          }`}
-                        >
-                          {bal.outstandingBalance > 0 ? 'Pending' : 'Settled'}
+                return (
+                  <div
+                    key={contact.id}
+                    className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3 hover:border-[#006948]/30 transition-all"
+                  >
+                    {/* Member Header */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-[#006948]/10 text-[#006948] font-bold text-[16px] flex items-center justify-center">
+                          {contact.name.charAt(0)}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-[15px] font-bold text-[#121c2a]">{contact.name}</h3>
+                            <span
+                              className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                                bal.outstandingBalance > 0
+                                  ? 'bg-[#fed7aa] text-[#9a3412]'
+                                  : 'bg-[#88f8c4]/40 text-[#006948]'
+                              }`}
+                            >
+                              {bal.outstandingBalance > 0 ? 'Pending' : 'Settled'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-[#3e4942]">
+                            {formatPhoneNumberDisplay(contact.phoneNumber)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-[10px] text-[#3e4942] block font-medium">Balance</span>
+                        <span className="text-[20px] font-bold text-[#006948] tabular-nums">
+                          ₹{bal.outstandingBalance.toLocaleString('en-IN')}
                         </span>
                       </div>
-                      <p className="text-[11px] text-[#3e4942]">
-                        {formatPhoneNumberDisplay(contact.phoneNumber)}
-                      </p>
                     </div>
-                  </div>
 
-                  <div className="text-right">
-                    <span className="text-[10px] text-[#3e4942] block font-medium">Balance</span>
-                    <span className="text-[20px] font-bold text-[#006948] tabular-nums">
-                      ₹{bal.outstandingBalance.toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Sub-Metrics Row */}
-                <div className="grid grid-cols-3 gap-2 bg-[#f8f9ff] p-2.5 rounded-xl border border-[#dfe9fc]/40 text-[11px]">
-                  <div>
-                    <span className="text-[#3e4942] block">I Paid</span>
-                    <strong className="text-[#121c2a]">₹{bal.totalReimbursable.toLocaleString('en-IN')}</strong>
-                  </div>
-                  <div>
-                    <span className="text-[#3e4942] block">Repaid</span>
-                    <strong className="text-[#006948]">₹{bal.totalRepaid.toLocaleString('en-IN')}</strong>
-                  </div>
-                  <div>
-                    <span className="text-[#3e4942] block">Pending</span>
-                    <strong className="text-[#894d00]">{bal.pendingCount} items</strong>
-                  </div>
-                </div>
-
-                {/* Member Action Buttons */}
-                <div className="flex items-center gap-2 pt-1 border-t border-[#dfe9fc]/50">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenRecordRepayment(contact.id)}
-                    className="flex-1 py-2 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs active:scale-98 transition-all"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">payments</span>
-                    <span>Record Repayment</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleShareSummaryWhatsApp(contact)}
-                    title={`Send WhatsApp message to ${contact.name}`}
-                    className="h-9 px-3 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#006948] text-[12px] font-semibold flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">chat</span>
-                    <span>WhatsApp</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleCopySummary(contact)}
-                    title="Copy settlement summary"
-                    className="h-9 w-9 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#3e4942] flex items-center justify-center cursor-pointer transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">content_copy</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setExpandedContactId(isExpanded ? null : contact.id)}
-                    className="h-9 px-2.5 rounded-xl border border-[#dfe9fc] text-[#3e4942] hover:bg-[#eff3ff] text-[11px] font-semibold flex items-center gap-0.5 cursor-pointer"
-                  >
-                    <span>{isExpanded ? 'Hide' : 'History'}</span>
-                    <span className="material-symbols-outlined text-[14px]">
-                      {isExpanded ? 'expand_less' : 'expand_more'}
-                    </span>
-                  </button>
-                </div>
-
-                {/* Expanded Member Transactions Accordion */}
-                {isExpanded && (
-                  <div className="space-y-2 pt-2 border-t border-[#dfe9fc]/60">
-                    <span className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block">
-                      Settlement History for {contact.name} ({memberTransactions.length} records)
-                    </span>
-
-                    <div className="divide-y divide-[#dfe9fc]/60 max-h-56 overflow-y-auto">
-                      {memberTransactions.map((tx) => {
-                        const isRepay = tx.type === 'repayment';
-                        const isSettled = tx.appaSettled || tx.settlementStatus === 'settled';
-                        return (
-                          <div key={tx.id} className="py-2 flex items-center justify-between text-[12px]">
-                            <div className="min-w-0 pr-2">
-                              <p className="font-semibold text-[#121c2a] truncate">{tx.title}</p>
-                              <span className="text-[10px] text-[#3e4942]">
-                                {formatDateLabel(tx.date)} • {isRepay ? 'Repayment received' : 'Expense paid'}
-                              </span>
-                            </div>
-
-                            <div className="text-right shrink-0 flex items-center gap-2">
-                              <span
-                                className={`font-bold tabular-nums ${
-                                  isRepay ? 'text-[#006948]' : 'text-[#121c2a]'
-                                }`}
-                              >
-                                {isRepay ? `+ ₹${tx.amount}` : `₹${tx.amount}`}
-                              </span>
-
-                              {!isRepay && !isSettled && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleMarkItemSettled(tx)}
-                                  className="text-[10px] bg-[#dfe9fc] hover:bg-[#006948] hover:text-white text-[#121c2a] px-2 py-0.5 rounded-full font-medium transition-colors cursor-pointer"
-                                  title="Mark as settled"
-                                >
-                                  Settle
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      {memberTransactions.length === 0 && (
-                        <p className="text-[11px] text-[#6d7a72] py-2 text-center">
-                          No transactions recorded for {contact.name} yet.
-                        </p>
-                      )}
+                    {/* Sub-Metrics Row */}
+                    <div className="grid grid-cols-3 gap-2 bg-[#f8f9ff] p-2.5 rounded-xl border border-[#dfe9fc]/40 text-[11px]">
+                      <div>
+                        <span className="text-[#3e4942] block">I Paid</span>
+                        <strong className="text-[#121c2a]">₹{bal.totalReimbursable.toLocaleString('en-IN')}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[#3e4942] block">Repaid</span>
+                        <strong className="text-[#006948]">₹{bal.totalRepaid.toLocaleString('en-IN')}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[#3e4942] block">Pending</span>
+                        <strong className="text-[#894d00]">{bal.pendingCount} items</strong>
+                      </div>
                     </div>
+
+                    {/* Member Action Buttons */}
+                    <div className="flex items-center gap-2 pt-1 border-t border-[#dfe9fc]/50">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRecordRepayment(contact.id)}
+                        className="flex-1 py-2 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs active:scale-98 transition-all"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">payments</span>
+                        <span>Record Repayment</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleShareSummaryWhatsApp(contact)}
+                        title={`Send WhatsApp message to ${contact.name}`}
+                        className="h-9 px-3 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#006948] text-[12px] font-semibold flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">chat</span>
+                        <span>WhatsApp</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleCopySummary(contact)}
+                        title="Copy settlement summary"
+                        className="h-9 w-9 rounded-xl bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#3e4942] flex items-center justify-center cursor-pointer transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">content_copy</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setExpandedContactId(isExpanded ? null : contact.id)}
+                        className="h-9 px-2.5 rounded-xl border border-[#dfe9fc] text-[#3e4942] hover:bg-[#eff3ff] text-[11px] font-semibold flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <span>{isExpanded ? 'Hide' : 'History'}</span>
+                        <span className="material-symbols-outlined text-[14px]">
+                          {isExpanded ? 'expand_less' : 'expand_more'}
+                        </span>
+                      </button>
+                    </div>
+
+                    {/* Expanded Member Transactions Accordion with FIFO Allocation Details */}
+                    {isExpanded && (
+                      <div className="space-y-2 pt-2 border-t border-[#dfe9fc]/60">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block">
+                            FIFO Settlement History ({memberTransactions.length} records)
+                          </span>
+                          <span className="text-[10px] text-[#006948] bg-[#eff3ff] px-2 py-0.5 rounded-full font-medium">
+                            Oldest expenses settled first
+                          </span>
+                        </div>
+
+                        <div className="divide-y divide-[#dfe9fc]/60 max-h-64 overflow-y-auto">
+                          {memberTransactions.map((rawTx) => {
+                            // Retrieve FIFO-allocated version if available
+                            const tx = allocatedTxMap.get(rawTx.id) || rawTx;
+                            const isRepay = tx.type === 'repayment';
+                            const isSettled = tx.allocationStatus === 'settled' || tx.appaSettled || tx.settlementStatus === 'settled';
+                            const isPartial = tx.allocationStatus === 'partially_repaid';
+
+                            return (
+                              <div key={tx.id} className="py-2.5 flex items-start justify-between text-[12px] gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <p className="font-semibold text-[#121c2a] truncate">{tx.title}</p>
+                                    {!isRepay && (
+                                      <span
+                                        className={`text-[9px] px-1.5 py-0.2 rounded font-semibold ${
+                                          isSettled
+                                            ? 'bg-emerald-100 text-emerald-800'
+                                            : isPartial
+                                            ? 'bg-amber-100 text-amber-800'
+                                            : 'bg-slate-100 text-slate-700'
+                                        }`}
+                                      >
+                                        {isSettled
+                                          ? 'Settled'
+                                          : isPartial
+                                          ? `Partial (₹${tx.repaidSoFar || 0} repaid)`
+                                          : 'Unsettled'}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] text-[#3e4942] block mt-0.5">
+                                    {formatDateLabel(tx.date)} • {isRepay ? 'Repayment received' : 'Expense paid'}
+                                    {tx.accountName ? ` • ${tx.accountName}` : ''}
+                                  </span>
+                                </div>
+
+                                <div className="text-right shrink-0 flex items-center gap-2">
+                                  <div className="text-right">
+                                    <span
+                                      className={`font-bold tabular-nums block ${
+                                        isRepay ? 'text-[#006948]' : 'text-[#121c2a]'
+                                      }`}
+                                    >
+                                      {isRepay ? `+ ₹${tx.amount}` : `₹${tx.amount}`}
+                                    </span>
+                                    {!isRepay && isPartial && (
+                                      <span className="text-[10px] text-amber-700 block">
+                                        Rem: ₹{tx.outstandingAmount}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {!isRepay && !isSettled && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMarkItemSettled(tx)}
+                                      className="text-[10px] bg-[#dfe9fc] hover:bg-[#006948] hover:text-white text-[#121c2a] px-2 py-0.5 rounded-full font-medium transition-colors cursor-pointer"
+                                      title="Mark as settled manually"
+                                    >
+                                      Settle
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {memberTransactions.length === 0 && (
+                            <p className="text-[11px] text-[#6d7a72] py-2 text-center">
+                              No transactions recorded for {contact.name} yet.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
+                );
+              })}
+          </div>
+        </>
+      )}
+
+      {/* TAB 2: SETTLED ARCHIVE VIEW */}
+      {activeTab === 'archive' && (
+        <div className="space-y-4 animate-fade-in">
+          {/* Invariant & Preservation Notice Banner */}
+          <div className="bg-[#eff3ff] border border-[#dfe9fc] rounded-2xl p-4">
+            <div className="flex items-start gap-3">
+              <span className="material-symbols-outlined text-[#006948] text-[22px] shrink-0 mt-0.5">
+                verified_user
+              </span>
+              <div>
+                <h4 className="text-[13px] font-bold text-[#121c2a]">
+                  Settled Archive (Persistent & Balance Safe)
+                </h4>
+                <p className="text-[11px] text-[#3e4942] mt-0.5 leading-relaxed">
+                  Records in this archive are moved from the active ledger to keep your daily view clutter-free.
+                  Every archived item is preserved in Google Sheets (`Settled_Archive`) and <strong>remains 100% counted</strong> in your SBI, IOB, and Cash account balances so calculations never drift.
+                </p>
               </div>
-            );
-          })}
-      </div>
+            </div>
+          </div>
+
+          {/* Archived Batches */}
+          {archiveBatches.length > 0 ? (
+            <div className="space-y-3">
+              {archiveBatches.map((batch) => {
+                const totalSettledAmt = batch.items
+                  .filter((i) => i.type === 'expense')
+                  .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+
+                return (
+                  <div
+                    key={batch.batchId}
+                    className="bg-white rounded-2xl p-4 shadow-sm border border-[#dfe9fc]/60 space-y-3"
+                  >
+                    <div className="flex items-center justify-between border-b border-[#dfe9fc]/50 pb-2.5">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="material-symbols-outlined text-[#006948] text-[18px]">
+                            inventory
+                          </span>
+                          <h4 className="text-[14px] font-bold text-[#121c2a]">
+                            Settlement Batch: {batch.contactName}
+                          </h4>
+                        </div>
+                        <p className="text-[10px] text-[#3e4942] mt-0.5">
+                          Archived on {formatDateLabel(batch.archivedAt)} • {batch.items.length} records • Total ₹{totalSettledAmt.toLocaleString('en-IN')}
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setBatchToRestore(batch.batchId)}
+                        className="px-2.5 py-1 rounded-lg bg-[#eff3ff] hover:bg-[#dfe9fc] text-[#006948] text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Restore this settlement batch back to the active ledger"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">unarchive</span>
+                        <span>Restore Batch</span>
+                      </button>
+                    </div>
+
+                    <div className="divide-y divide-[#dfe9fc]/40 max-h-48 overflow-y-auto">
+                      {batch.items.map((item) => (
+                        <div key={item.id} className="py-2 flex items-center justify-between text-[11px]">
+                          <div>
+                            <span className="font-semibold text-[#121c2a] block">{item.title}</span>
+                            <span className="text-[10px] text-[#3e4942]">
+                              {formatDateLabel(item.date)} • {item.accountName || 'Account'} • {item.type === 'expense' ? 'Expense' : 'Repayment'}
+                            </span>
+                          </div>
+                          <span
+                            className={`font-bold tabular-nums ${
+                              item.type === 'repayment' ? 'text-[#006948]' : 'text-[#121c2a]'
+                            }`}
+                          >
+                            {item.type === 'repayment' ? `+ ₹${item.amount}` : `₹${item.amount}`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl p-8 text-center border border-[#dfe9fc]/60 space-y-2">
+              <div className="w-12 h-12 rounded-full bg-[#eff3ff] text-[#006948] flex items-center justify-center mx-auto">
+                <span className="material-symbols-outlined text-[24px]">archive</span>
+              </div>
+              <h4 className="text-[14px] font-bold text-[#121c2a]">No Settled Archives Yet</h4>
+              <p className="text-[12px] text-[#3e4942] max-w-xs mx-auto">
+                When a family member's balance reaches exactly ₹0, you can archive their settled records here to keep your active ledger completely clean.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* CONFIRM ARCHIVE MODAL */}
+      {contactToArchive && (
+        <div className="fixed inset-0 z-50 bg-black/45 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[20px]">archive</span>
+              </div>
+              <div>
+                <h3 className="text-[15px] font-bold text-[#121c2a]">
+                  Archive Settled Records?
+                </h3>
+                <p className="text-[11px] text-[#3e4942]">
+                  {contactToArchive.name} (Balance: ₹0)
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[12px] text-[#3e4942] leading-relaxed">
+              Moving settled records to the <strong>Settled Archive</strong> keeps your active ledger clean.
+            </p>
+
+            <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc] space-y-1 text-[11px] text-[#121c2a]">
+              <p>✓ Saved permanently to Google Sheets `Settled_Archive`.</p>
+              <p>✓ Your SBI, IOB, and Cash balances will NOT change.</p>
+              <p>✓ You can restore them anytime from the Settled Archive tab.</p>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isArchiving}
+                onClick={() => setContactToArchive(null)}
+                className="flex-1 py-2.5 rounded-xl border border-[#dfe9fc] text-[12px] font-semibold text-[#3e4942] hover:bg-[#eff3ff]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isArchiving}
+                onClick={handleConfirmArchive}
+                className="flex-1 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-[12px] font-semibold shadow-xs flex items-center justify-center gap-1"
+              >
+                {isArchiving ? (
+                  <span>Archiving...</span>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[16px]">check</span>
+                    <span>Confirm Archive</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM RESTORE MODAL */}
+      {batchToRestore && (
+        <div className="fixed inset-0 z-50 bg-black/45 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[20px]">unarchive</span>
+              </div>
+              <div>
+                <h3 className="text-[15px] font-bold text-[#121c2a]">
+                  Restore Settlement Batch?
+                </h3>
+                <p className="text-[11px] text-[#3e4942]">
+                  Return records to Active Ledger
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[12px] text-[#3e4942] leading-relaxed">
+              This will restore all transactions from this batch back into your active transaction list.
+            </p>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isRestoring}
+                onClick={() => setBatchToRestore(null)}
+                className="flex-1 py-2.5 rounded-xl border border-[#dfe9fc] text-[12px] font-semibold text-[#3e4942] hover:bg-[#eff3ff]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isRestoring}
+                onClick={handleConfirmRestore}
+                className="flex-1 py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold shadow-xs flex items-center justify-center gap-1"
+              >
+                {isRestoring ? (
+                  <span>Restoring...</span>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[16px]">check</span>
+                    <span>Confirm Restore</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Record Repayment Modal */}
       {showRepayModal && (
@@ -589,7 +1013,10 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setRepayMethod('upi')}
+                    onClick={() => {
+                      setRepayMethod('upi');
+                      if (repayAccountId === 'acc-cash') setRepayAccountId('acc-sbi');
+                    }}
                     className={`py-2 rounded-xl text-[12px] font-semibold border transition-all cursor-pointer ${
                       repayMethod === 'upi'
                         ? 'bg-[#006948] text-white border-[#006948]'
@@ -600,7 +1027,10 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setRepayMethod('cash')}
+                    onClick={() => {
+                      setRepayMethod('cash');
+                      setRepayAccountId('acc-cash');
+                    }}
                     className={`py-2 rounded-xl text-[12px] font-semibold border transition-all cursor-pointer ${
                       repayMethod === 'cash'
                         ? 'bg-[#006948] text-white border-[#006948]'
@@ -611,6 +1041,66 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* Deposit Into Account */}
+              <div>
+                <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
+                  Deposit Into Account
+                </label>
+                <select
+                  value={repayAccountId}
+                  onChange={(e) => setRepayAccountId(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[13px] text-[#121c2a] focus:outline-none focus:border-[#006948]"
+                >
+                  {accounts.map((acc) => {
+                    const bal = acc.id === 'acc-sbi' ? sbiBalance : acc.id === 'acc-iob' ? iobBalance : cashBalance;
+                    return (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name} (Current: ₹{bal.toLocaleString('en-IN')})
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="text-[10px] text-[#3e4942] mt-1">
+                  Increases selected account balance. Does NOT count as taxable or freelance income.
+                </p>
+              </div>
+
+              {/* Date */}
+              <div>
+                <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
+                  Repayment Date
+                </label>
+                <input
+                  type="date"
+                  value={repayDate}
+                  onChange={(e) => setRepayDate(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#f8f9ff] border border-[#dfe9fc] rounded-xl text-[13px] text-[#121c2a] focus:outline-none focus:border-[#006948]"
+                />
+              </div>
+
+              {/* Advance Adjustment Checkbox if amount exceeds outstanding */}
+              {(() => {
+                const curBal = familyBalances[repayContactId]?.outstandingBalance || 0;
+                const enteredAmt = parseInt(repayAmount, 10) || 0;
+                if (curBal > 0 && enteredAmt > curBal) {
+                  return (
+                    <div className="bg-[#fff8e1] border border-[#ffe082] rounded-xl p-3 flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        id="advanceAdjustmentCheck"
+                        checked={isAdvanceAdjustment}
+                        onChange={(e) => setIsAdvanceAdjustment(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 text-[#006948] rounded border-gray-300 focus:ring-[#006948]"
+                      />
+                      <label htmlFor="advanceAdjustmentCheck" className="text-[11px] text-[#8d6e63] font-medium leading-tight cursor-pointer">
+                        Confirm as advance settlement (Amount ₹{enteredAmt} exceeds current debt ₹{curBal})
+                      </label>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
 
               {/* Note */}
               <div>
@@ -640,7 +1130,7 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold shadow-xs"
+                  className="flex-1 py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold shadow-xs cursor-pointer"
                 >
                   Save Repayment
                 </button>
@@ -705,7 +1195,7 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
                 <button
                   type="button"
                   onClick={handleSaveContact}
-                  className="flex-1 py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold shadow-xs"
+                  className="flex-1 py-2.5 rounded-xl bg-[#006948] hover:bg-[#00855d] text-white text-[12px] font-semibold shadow-xs cursor-pointer"
                 >
                   {editingContact ? 'Update Contact' : 'Save Member'}
                 </button>
