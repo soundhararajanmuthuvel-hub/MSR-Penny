@@ -257,8 +257,8 @@ export const initialSeedData: AppState = {
   settings: {
     monthlyBudget: 4000,
     userName: 'Soundhar',
-    appaPhoneNumber: typeof import.meta !== 'undefined' && import.meta.env?.VITE_APPA_WHATSAPP_NUMBER ? import.meta.env.VITE_APPA_WHATSAPP_NUMBER : '+919876543210',
-    googleAppsScriptUrl: typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_APPS_SCRIPT_URL ? import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL : '',
+    appaPhoneNumber: typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_APPA_WHATSAPP_NUMBER ? (import.meta as any).env.VITE_APPA_WHATSAPP_NUMBER : '+919876543210',
+    googleAppsScriptUrl: typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ? (import.meta as any).env.VITE_GOOGLE_APPS_SCRIPT_URL : '',
     googleSheetId: '',
     lastSyncedAt: null,
     syncEnabled: false,
