@@ -525,6 +525,30 @@ function doGet(e) {
       });
     }
 
+    // Settled Archive action
+    if (action === 'get_settled_archive') {
+      var archiveItems = readSettledArchiveFromSheet(ss);
+      return jsonResponse({ success: true, archiveItems: archiveItems, count: archiveItems.length });
+    }
+
+    // Reconciliations action
+    if (action === 'get_reconciliations') {
+      var reconciliations = readReconciliationsFromSheet(ss);
+      return jsonResponse({ success: true, reconciliations: reconciliations, count: reconciliations.length });
+    }
+
+    // Data Health Check action
+    if (action === 'check_data_health') {
+      var healthReport = runDataHealthCheck(ss);
+      return jsonResponse({ success: true, healthReport: healthReport });
+    }
+
+    // Push Subscriptions action
+    if (action === 'get_push_subscriptions') {
+      var subs = readPushSubscriptionsFromSheet(ss);
+      return jsonResponse({ success: true, subscriptions: subs, count: subs.length });
+    }
+
     // 2. Delete Transaction action (GET fallback)
     if (action === 'delete_transaction') {
       var txId = (e && e.parameter) ? (e.parameter.transactionId || e.parameter.id) : null;
@@ -600,6 +624,36 @@ function doPost(e) {
         message: "Google Sheet demo data wiped clean! Headers preserved.",
         timestamp: new Date().toISOString()
       });
+    }
+
+    // Archive Settled Items action
+    if (action === 'archive_settled_items') {
+      var archRes = archiveSettledTransactions(ss, payload.batchId, payload.contactId, payload.transactionIds);
+      return jsonResponse(archRes);
+    }
+
+    // Restore Archived Items action
+    if (action === 'restore_archived_items') {
+      var restRes = restoreArchivedTransactions(ss, payload.batchId);
+      return jsonResponse(restRes);
+    }
+
+    // Save Reconciliation action
+    if (action === 'save_reconciliation') {
+      var reconRes = saveReconciliationAdjustment(ss, payload.reconciliation);
+      return jsonResponse(reconRes);
+    }
+
+    // Manual Backup action
+    if (action === 'create_backup') {
+      var backupName = createBackupTransactionsSheet(ss);
+      return jsonResponse({ success: true, backupName: backupName, message: "Backup copy created: " + backupName });
+    }
+
+    // Push Subscription Save action
+    if (action === 'save_push_subscription') {
+      var saveSubRes = savePushSubscriptionToSheet(ss, payload.subscription, payload.userAgent);
+      return jsonResponse(saveSubRes);
     }
 
     // 2. Single Transaction Add / Upsert (Idempotent with duplicate prevention)
@@ -1308,4 +1362,472 @@ function formatCurrencyColumn(sheet, colIndex, startRow, numRows) {
       sheet.getRange(startRow, colIndex, numRows, 1).setNumberFormat('₹#,##0.00');
     }
   } catch (e) {}
+}
+
+function getPushSubscriptionsHeader() {
+  return ["Subscription ID", "Endpoint", "P256dh Key", "Auth Key", "User Agent", "Created At", "Updated At"];
+}
+
+function ensurePushSubscriptionsSheet(ss) {
+  if (!ss) ss = getTargetSpreadsheet();
+  if (!ss) return;
+  var header = getPushSubscriptionsHeader();
+  return getOrCreateSheet(ss, "Push_Subscriptions", header);
+}
+
+function readPushSubscriptionsFromSheet(ss) {
+  var sheet = ss.getSheetByName("Push_Subscriptions");
+  if (!sheet || sheet.getLastRow() <= 1) return [];
+  var data = sheet.getDataRange().getValues();
+  var subs = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[1]) continue;
+    subs.push({
+      id: String(row[0] || ""),
+      endpoint: String(row[1]),
+      keys: {
+        p256dh: String(row[2] || ""),
+        auth: String(row[3] || "")
+      },
+      userAgent: String(row[4] || ""),
+      createdAt: row[5] ? String(row[5]) : new Date().toISOString(),
+      updatedAt: row[6] ? String(row[6]) : new Date().toISOString()
+    });
+  }
+  return subs;
+}
+
+function savePushSubscriptionToSheet(ss, sub, userAgent) {
+  if (!sub || !sub.endpoint || !sub.keys) {
+    return { success: false, error: "Invalid push subscription object." };
+  }
+  var sheet = ensurePushSubscriptionsSheet(ss);
+  var data = sheet.getDataRange().getValues();
+  var now = new Date().toISOString();
+  var subId = sub.id || ('sub-' + Date.now());
+  var endpoint = String(sub.endpoint).trim();
+  var p256dh = String(sub.keys.p256dh || "").trim();
+  var auth = String(sub.keys.auth || "").trim();
+  var ua = String(userAgent || "PWA").trim();
+
+  var existingIdx = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][1]).trim() === endpoint) {
+      existingIdx = i + 1;
+      subId = String(data[i][0] || subId);
+      break;
+    }
+  }
+
+  var rowValues = [subId, endpoint, p256dh, auth, ua, now, now];
+  if (existingIdx > 0) {
+    var origCreatedAt = data[existingIdx - 1][5] || now;
+    rowValues[5] = origCreatedAt;
+    sheet.getRange(existingIdx, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
+  return { success: true, message: "Push subscription saved to Google Sheet.", subscriptionId: subId };
+}
+
+// =============================================================================
+// MSR PENNY v3: SETTLED ARCHIVE, RECONCILIATIONS & AUDIT LOG
+// =============================================================================
+
+function getSettledArchiveHeader() {
+  return [
+    "Archive ID",
+    "Original Transaction ID",
+    "Date",
+    "Description",
+    "Type",
+    "Amount (₹)",
+    "Category",
+    "Payment Method",
+    "Account ID",
+    "Account Name",
+    "Family Contact ID",
+    "Family Contact Name",
+    "Archived At",
+    "Archive Batch ID",
+    "Notes"
+  ];
+}
+
+function ensureSettledArchiveSheet(ss) {
+  if (!ss) ss = getTargetSpreadsheet();
+  if (!ss) return;
+  var header = getSettledArchiveHeader();
+  return getOrCreateSheet(ss, "Settled_Archive", header);
+}
+
+function getReconciliationsHeader() {
+  return [
+    "Reconciliation ID",
+    "Date",
+    "Account ID",
+    "Account Name",
+    "Real Balance (₹)",
+    "Computed Balance (₹)",
+    "Adjustment Amount (₹)",
+    "Notes",
+    "Created At"
+  ];
+}
+
+function ensureReconciliationsSheet(ss) {
+  if (!ss) ss = getTargetSpreadsheet();
+  if (!ss) return;
+  var header = getReconciliationsHeader();
+  return getOrCreateSheet(ss, "Reconciliations", header);
+}
+
+function getAuditLogHeader() {
+  return [
+    "Log ID",
+    "Timestamp",
+    "Action",
+    "Entity Type",
+    "Entity ID",
+    "Summary",
+    "Status"
+  ];
+}
+
+function ensureAuditLogSheet(ss) {
+  if (!ss) ss = getTargetSpreadsheet();
+  if (!ss) return;
+  var header = getAuditLogHeader();
+  return getOrCreateSheet(ss, "Audit_Log", header);
+}
+
+function logAuditEvent(ss, action, entityType, entityId, summary, status) {
+  try {
+    var sheet = ensureAuditLogSheet(ss);
+    var now = new Date().toISOString();
+    var logId = "log-" + Utilities.getUuid().slice(0, 8);
+    sheet.appendRow([
+      logId,
+      now,
+      String(action),
+      String(entityType),
+      String(entityId),
+      String(summary),
+      String(status || "SUCCESS")
+    ]);
+  } catch (err) {
+    // Audit logging should not crash primary operations
+  }
+}
+
+function readSettledArchiveFromSheet(ss) {
+  var sheet = ss.getSheetByName("Settled_Archive");
+  if (!sheet || sheet.getLastRow() <= 1) return [];
+  var data = sheet.getDataRange().getValues();
+  var archiveItems = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[0]) continue;
+    archiveItems.push({
+      id: String(row[0]),
+      originalTransactionId: String(row[1] || row[0]),
+      date: formatDateForSheet(row[2]),
+      title: String(row[3] || ""),
+      type: String(row[4] || "expense").toLowerCase(),
+      amount: Number(row[5]) || 0,
+      category: String(row[6] || "Family"),
+      paymentMethod: String(row[7] || "upi").toLowerCase(),
+      accountId: String(row[8] || "acc-sbi"),
+      accountName: String(row[9] || "SBI (Main)"),
+      familyContactId: String(row[10] || ""),
+      familyContactName: String(row[11] || ""),
+      archivedAt: row[12] ? String(row[12]) : new Date().toISOString(),
+      archiveBatchId: String(row[13] || ""),
+      notes: String(row[14] || "")
+    });
+  }
+  return archiveItems;
+}
+
+function readReconciliationsFromSheet(ss) {
+  var sheet = ss.getSheetByName("Reconciliations");
+  if (!sheet || sheet.getLastRow() <= 1) return [];
+  var data = sheet.getDataRange().getValues();
+  var recs = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[0]) continue;
+    recs.push({
+      id: String(row[0]),
+      date: formatDateForSheet(row[1]),
+      accountId: String(row[2] || ""),
+      accountName: String(row[3] || ""),
+      realBalance: Number(row[4]) || 0,
+      computedBalance: Number(row[5]) || 0,
+      adjustmentAmount: Number(row[6]) || 0,
+      notes: String(row[7] || ""),
+      createdAt: row[8] ? String(row[8]) : new Date().toISOString()
+    });
+  }
+  return recs;
+}
+
+function archiveSettledTransactions(ss, batchId, contactId, txIds) {
+  if (!txIds || txIds.length === 0) {
+    return { success: false, error: "No transaction IDs provided for archiving." };
+  }
+
+  // 1. Automatic pre-archive backup snapshot
+  createBackupTransactionsSheet(ss);
+
+  var txSheet = ss.getSheetByName("Transactions");
+  if (!txSheet || txSheet.getLastRow() <= 1) {
+    return { success: false, error: "Transactions sheet is empty." };
+  }
+
+  var archSheet = ensureSettledArchiveSheet(ss);
+  var data = txSheet.getDataRange().getValues();
+  var now = new Date().toISOString();
+  var finalBatchId = batchId || ("arch-batch-" + Date.now());
+
+  var rowsToArchive = [];
+  var rowIndicesToDelete = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var currentId = String(row[0]).trim();
+    if (txIds.indexOf(currentId) !== -1) {
+      var archId = "arch-" + currentId;
+      var archRow = [
+        archId,
+        currentId,
+        formatDateForSheet(row[1]),
+        String(row[2] || ""),
+        String(row[3] || "expense"),
+        Number(row[4]) || 0,
+        String(row[5] || "Family"),
+        String(row[6] || "upi"),
+        String(row[14] || "acc-sbi"),
+        String(row[15] || "SBI (Main)"),
+        String(row[11] || contactId || ""),
+        String(row[12] || "Family Member"),
+        now,
+        finalBatchId,
+        String(row[9] || "")
+      ];
+      rowsToArchive.push(archRow);
+      rowIndicesToDelete.push(i + 1); // 1-based index
+    }
+  }
+
+  if (rowsToArchive.length === 0) {
+    return { success: false, error: "None of the specified transactions were found in active Transactions." };
+  }
+
+  // 2. Write rows to Settled_Archive
+  archSheet.getRange(archSheet.getLastRow() + 1, 1, rowsToArchive.length, rowsToArchive[0].length).setValues(rowsToArchive);
+
+  // 3. Read-after-write verification on Settled_Archive
+  SpreadsheetApp.flush();
+  var verifyData = archSheet.getDataRange().getValues();
+  var writtenCount = 0;
+  for (var v = 1; v < verifyData.length; v++) {
+    if (String(verifyData[v][13]).trim() === finalBatchId) {
+      writtenCount++;
+    }
+  }
+  if (writtenCount < rowsToArchive.length) {
+    throw new Error("Read-after-write verification failed for Settled_Archive. Archive rolled back.");
+  }
+
+  // 4. Remove active rows from Transactions in descending order (to maintain row indices)
+  rowIndicesToDelete.sort(function(a, b) { return b - a; });
+  for (var d = 0; d < rowIndicesToDelete.length; d++) {
+    txSheet.deleteRow(rowIndicesToDelete[d]);
+  }
+
+  logAuditEvent(ss, "ARCHIVE", "archive", finalBatchId, "Archived " + rowsToArchive.length + " items for contact " + contactId, "SUCCESS");
+
+  return {
+    success: true,
+    batchId: finalBatchId,
+    archivedCount: rowsToArchive.length,
+    message: "Atomically archived " + rowsToArchive.length + " settled items to Settled_Archive."
+  };
+}
+
+function restoreArchivedTransactions(ss, batchId) {
+  if (!batchId) {
+    return { success: false, error: "Batch ID required for restore." };
+  }
+
+  var archSheet = ss.getSheetByName("Settled_Archive");
+  if (!archSheet || archSheet.getLastRow() <= 1) {
+    return { success: false, error: "Settled_Archive is empty." };
+  }
+
+  var txSheet = ensureTransactionsSheet(ss);
+  var archData = archSheet.getDataRange().getValues();
+  var rowsToRestore = [];
+  var rowsToDeleteFromArch = [];
+
+  for (var i = 1; i < archData.length; i++) {
+    var row = archData[i];
+    if (String(row[13]).trim() === String(batchId).trim()) {
+      var origTxId = String(row[1] || row[0]);
+      var isAppa = String(row[10]) === "family-appa";
+      var restoredRow = [
+        origTxId,
+        formatDateForSheet(row[2]),
+        String(row[3] || ""),
+        String(row[4] || "expense"),
+        Number(row[5]) || 0,
+        String(row[6] || "Family"),
+        String(row[7] || "upi"),
+        isAppa ? "YES" : "NO",
+        "YES",
+        String(row[14] || ""),
+        row[12] ? String(row[12]) : new Date().toISOString(),
+        String(row[10] || ""),
+        String(row[11] || ""),
+        "settled",
+        String(row[8] || "acc-sbi"),
+        String(row[9] || "SBI (Main)")
+      ];
+      rowsToRestore.push(restoredRow);
+      rowsToDeleteFromArch.push(i + 1);
+    }
+  }
+
+  if (rowsToRestore.length === 0) {
+    return { success: false, error: "No archived items found matching batch ID: " + batchId };
+  }
+
+  // Append back to Transactions
+  txSheet.getRange(txSheet.getLastRow() + 1, 1, rowsToRestore.length, rowsToRestore[0].length).setValues(rowsToRestore);
+  SpreadsheetApp.flush();
+
+  // Delete from Settled_Archive in reverse
+  rowsToDeleteFromArch.sort(function(a, b) { return b - a; });
+  for (var r = 0; r < rowsToDeleteFromArch.length; r++) {
+    archSheet.deleteRow(rowsToDeleteFromArch[r]);
+  }
+
+  logAuditEvent(ss, "RESTORE", "archive", batchId, "Restored " + rowsToRestore.length + " items to active Transactions", "SUCCESS");
+
+  return {
+    success: true,
+    batchId: batchId,
+    restoredCount: rowsToRestore.length,
+    message: "Restored " + rowsToRestore.length + " transactions from archive."
+  };
+}
+
+function saveReconciliationAdjustment(ss, rec) {
+  if (!rec || !rec.accountId || typeof rec.adjustmentAmount !== "number") {
+    return { success: false, error: "Invalid reconciliation payload: accountId and adjustmentAmount are required." };
+  }
+
+  var sheet = ensureReconciliationsSheet(ss);
+  var recId = rec.id || ("rec-" + Date.now());
+  var now = new Date().toISOString();
+  var dateStr = formatDateForSheet(rec.date || now.split("T")[0]);
+
+  var row = [
+    recId,
+    dateStr,
+    String(rec.accountId),
+    String(rec.accountName || "Account"),
+    Number(rec.realBalance) || 0,
+    Number(rec.computedBalance) || 0,
+    Number(rec.adjustmentAmount) || 0,
+    String(rec.notes || "Balance reconciliation adjustment"),
+    now
+  ];
+
+  sheet.appendRow(row);
+  logAuditEvent(ss, "RECONCILE", "account", rec.accountId, "Recorded adjustment ₹" + rec.adjustmentAmount + " on " + rec.accountName, "SUCCESS");
+
+  return {
+    success: true,
+    reconciliationId: recId,
+    message: "Reconciliation adjustment recorded successfully."
+  };
+}
+
+function runDataHealthCheck(ss) {
+  if (!ss) ss = getTargetSpreadsheet();
+  var issues = [];
+
+  var txSheet = ss.getSheetByName("Transactions");
+  if (txSheet && txSheet.getLastRow() > 1) {
+    var txData = txSheet.getDataRange().getValues();
+    var seenIds = {};
+
+    for (var i = 1; i < txData.length; i++) {
+      var row = txData[i];
+      var txId = String(row[0] || "").trim();
+
+      // Check duplicate or missing ID
+      if (!txId) {
+        issues.push({
+          id: "issue-missing-id-" + (i + 1),
+          severity: "error",
+          category: "invalid_field",
+          title: "Missing Transaction ID",
+          description: "Row " + (i + 1) + " has an empty transaction ID.",
+          proposedFix: "Assign a unique tx- UUID."
+        });
+      } else if (seenIds[txId]) {
+        issues.push({
+          id: "issue-dup-" + txId,
+          severity: "error",
+          category: "duplicate_id",
+          title: "Duplicate Transaction ID",
+          description: "Transaction ID " + txId + " appears multiple times in Transactions.",
+          recordId: txId,
+          proposedFix: "Regenerate unique ID for duplicate row."
+        });
+      } else {
+        seenIds[txId] = true;
+      }
+
+      // Check positive amount
+      var amt = Number(row[4]);
+      if (isNaN(amt) || amt <= 0) {
+        issues.push({
+          id: "issue-amt-" + txId,
+          severity: "error",
+          category: "invalid_field",
+          title: "Invalid Amount",
+          description: "Transaction " + txId + " has non-positive amount: " + row[4],
+          recordId: txId
+        });
+      }
+
+      // Check unassigned account
+      var accId = String(row[14] || "").trim();
+      if (!accId || accId === "unassigned") {
+        issues.push({
+          id: "issue-acc-" + txId,
+          severity: "warning",
+          category: "orphan",
+          title: "Unassigned Account",
+          description: "Transaction " + txId + " (" + row[2] + ") has no assigned bank/cash account.",
+          recordId: txId,
+          proposedFix: "Assign to SBI or Cash based on payment method."
+        });
+      }
+    }
+  }
+
+  return {
+    timestamp: new Date().toISOString(),
+    totalIssuesCount: issues.length,
+    errorsCount: issues.filter(function(x) { return x.severity === "error"; }).length,
+    warningsCount: issues.filter(function(x) { return x.severity === "warning"; }).length,
+    issues: issues,
+    isHealthy: issues.length === 0
+  };
 }
