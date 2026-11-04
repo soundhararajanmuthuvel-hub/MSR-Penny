@@ -44,8 +44,12 @@
       "destination": "/api/push?action=$1"
     },
     {
+      "source": "/api/data",
+      "destination": "/api/data"
+    },
+    {
       "source": "/api/(.*)",
-      "destination": "/api/index?route=$1"
+      "destination": "/api/data?route=$1"
     },
     {
       "source": "/(.*)",
