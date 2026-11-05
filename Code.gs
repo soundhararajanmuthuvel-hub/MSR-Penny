@@ -471,6 +471,20 @@ function doGet(e) {
       return jsonResponse({ success: true, count: accounts.length, accounts: accounts });
     }
 
+    // 2b-2. Get Accounts Backups
+    if (action === 'get_accounts_backups') {
+      var bSheets = [];
+      var allSheets = ss.getSheets();
+      for (var si = 0; si < allSheets.length; si++) {
+        var sName = allSheets[si].getName();
+        if (sName.indexOf("Accounts_backup_") === 0) {
+          bSheets.push(sName);
+        }
+      }
+      bSheets.sort().reverse();
+      return jsonResponse({ success: true, backups: bSheets });
+    }
+
     // 2c. Get Transfers
     if (action === 'get_transfers') {
       var transfers = readTransfersFromSheet(ss);
@@ -697,10 +711,16 @@ function doPost(e) {
       return jsonResponse(syncResult);
     }
 
-    // 3b. Save Accounts action
+    // 3b. Save Accounts action (with lock, backup, audit log & read-back)
     if (action === 'save_accounts' && Array.isArray(payload.accounts)) {
-      syncAccountsSheet(ss, payload.accounts);
-      return jsonResponse({ success: true, message: 'Accounts saved successfully.', accounts: payload.accounts });
+      var resAcc = saveAccountsWithAuditAndBackup(ss, payload.accounts);
+      return jsonResponse(resAcc);
+    }
+
+    // 3b-2. Restore Accounts Backup action
+    if (action === 'restore_accounts_backup') {
+      var restoreRes = restoreAccountsBackup(ss, payload.backupName);
+      return jsonResponse(restoreRes);
     }
 
     // 3c. Add Transfer action
@@ -1515,6 +1535,279 @@ function syncAccountsSheet(ss, accounts) {
   }
   sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   formatCurrencyColumn(sheet, 4, 2, rows.length);
+}
+
+/**
+ * Creates a dated backup copy of the Accounts tab: Accounts_backup_YYYY-MM-DD_HHmm
+ * Prunes backups older than the 10 most recent.
+ */
+function backupAccountsSheet(ss) {
+  if (!ss) ss = getTargetSpreadsheet();
+  if (!ss) return null;
+  var accSheet = ss.getSheetByName("Accounts");
+  if (!accSheet || accSheet.getLastRow() <= 1) return null;
+
+  var timestamp = Utilities.formatDate(new Date(), "Asia/Kolkata", "yyyy-MM-dd_HHmm");
+  var backupName = "Accounts_backup_" + timestamp;
+
+  // If already backed up in the same minute, return it
+  var existingBackup = ss.getSheetByName(backupName);
+  if (existingBackup) {
+    return backupName;
+  }
+
+  var backupSheet = accSheet.copyTo(ss);
+  backupSheet.setName(backupName);
+
+  pruneOldAccountsBackups(ss, 10);
+  return backupName;
+}
+
+function pruneOldAccountsBackups(ss, maxKeep) {
+  if (!ss) return;
+  var sheets = ss.getSheets();
+  var backupSheets = [];
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (name.indexOf("Accounts_backup_") === 0) {
+      backupSheets.push({ sheet: sheets[i], name: name });
+    }
+  }
+
+  backupSheets.sort(function(a, b) {
+    return b.name.localeCompare(a.name);
+  });
+
+  for (var j = maxKeep; j < backupSheets.length; j++) {
+    try {
+      ss.deleteSheet(backupSheets[j].sheet);
+    } catch (e) {}
+  }
+}
+
+/**
+ * Saves Accounts with LockService, server-side validation, automated backup,
+ * audit logging, and read-back verification.
+ */
+function saveAccountsWithAuditAndBackup(ss, accounts) {
+  if (!ss) ss = getTargetSpreadsheet();
+  if (!ss) return { success: false, error: "Spreadsheet not found" };
+
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    return { success: false, error: "Accounts array is required" };
+  }
+
+  // Validate server-side: allowed account IDs and non-negative amounts
+  var allowedIds = { "acc-sbi": true, "acc-iob": true, "acc-cash": true };
+  for (var i = 0; i < accounts.length; i++) {
+    var a = accounts[i];
+    if (!a.id || !allowedIds[a.id]) {
+      return { success: false, error: "Invalid account ID: " + a.id };
+    }
+    var num = Number(a.openingBalance);
+    if (isNaN(num) || num < 0) {
+      return { success: false, error: "Opening balance cannot be negative or invalid for " + (a.name || a.id) };
+    }
+  }
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000); // 30-second timeout for atomic lock
+  } catch (lockErr) {
+    return { success: false, error: "Concurrent write in progress. Please retry in a few moments." };
+  }
+
+  try {
+    var currentAccounts = readAccountsFromSheet(ss);
+    var currentMap = {};
+    for (var c = 0; c < currentAccounts.length; c++) {
+      currentMap[currentAccounts[c].id] = currentAccounts[c];
+    }
+
+    var changes = [];
+    var now = new Date().toISOString();
+
+    for (var k = 0; k < accounts.length; k++) {
+      var acc = accounts[k];
+      var old = currentMap[acc.id];
+      if (old) {
+        var balChanged = Math.abs((Number(acc.openingBalance) || 0) - (Number(old.openingBalance) || 0)) > 0.001;
+        var dateChanged = formatDateForSheet(acc.openingDate) !== formatDateForSheet(old.openingDate);
+        var nameChanged = acc.name && acc.name.trim() !== old.name;
+
+        if (balChanged || dateChanged || nameChanged) {
+          changes.push({
+            id: acc.id,
+            name: acc.name || old.name,
+            oldBalance: old.openingBalance,
+            newBalance: Number(acc.openingBalance) || 0,
+            oldDate: old.openingDate,
+            newDate: formatDateForSheet(acc.openingDate),
+            balChanged: balChanged,
+            dateChanged: dateChanged,
+            nameChanged: nameChanged
+          });
+        }
+      }
+    }
+
+    var backupCreated = null;
+    if (changes.length > 0) {
+      // 1. Create safety backup
+      backupCreated = backupAccountsSheet(ss);
+
+      // 2. Map updated rows while preserving row structure and CreatedAt
+      var updatedList = currentAccounts.map(function(existing) {
+        var inputAcc = null;
+        for (var idx = 0; idx < accounts.length; idx++) {
+          if (accounts[idx].id === existing.id) {
+            inputAcc = accounts[idx];
+            break;
+          }
+        }
+        if (!inputAcc) return existing;
+
+        var wasModified = false;
+        for (var ci = 0; ci < changes.length; ci++) {
+          if (changes[ci].id === existing.id) {
+            wasModified = true;
+            break;
+          }
+        }
+
+        return {
+          id: existing.id,
+          name: inputAcc.name || existing.name,
+          type: existing.type,
+          openingBalance: Number(inputAcc.openingBalance) || 0,
+          openingDate: formatDateForSheet(inputAcc.openingDate || existing.openingDate),
+          active: inputAcc.active !== false,
+          createdAt: existing.createdAt || now,
+          updatedAt: wasModified ? now : (existing.updatedAt || now)
+        };
+      });
+
+      // 3. Write to Accounts sheet
+      var header = getAccountsHeader();
+      var sheet = getOrCreateSheet(ss, "Accounts", header);
+      var rows = updatedList.map(function(a) {
+        return [
+          a.id,
+          a.name,
+          a.type,
+          a.openingBalance,
+          a.openingDate,
+          a.active ? "YES" : "NO",
+          a.createdAt,
+          a.updatedAt
+        ];
+      });
+
+      if (sheet.getLastRow() > 1) {
+        sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(1, sheet.getLastColumn())).clearContent();
+      }
+      sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+      formatCurrencyColumn(sheet, 4, 2, rows.length);
+
+      // 4. Audit log each changed account
+      for (var l = 0; l < changes.length; l++) {
+        var ch = changes[l];
+        var summary = "Changed " + ch.id + " (" + ch.name + "): Opening ₹" + ch.oldBalance + " -> ₹" + ch.newBalance +
+                      (ch.dateChanged ? " | Date " + ch.oldDate + " -> " + ch.newDate : "");
+        logAuditEvent(ss, "OPENING_BALANCE_CHANGED", "account", ch.id, summary, "SUCCESS");
+      }
+    }
+
+    // 5. Read-back verification: read authoritative sheet content
+    var verifiedAccounts = readAccountsFromSheet(ss);
+
+    return {
+      success: true,
+      message: changes.length > 0 ? "Accounts and opening balances saved successfully." : "No changes detected.",
+      changesCount: changes.length,
+      backupName: backupCreated,
+      accounts: verifiedAccounts
+    };
+  } catch (err) {
+    return { success: false, error: "Failed to update accounts: " + err.message };
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e) {}
+  }
+}
+
+/**
+ * Restores accounts from a specified backup sheet.
+ */
+function restoreAccountsBackup(ss, backupName) {
+  if (!ss) ss = getTargetSpreadsheet();
+  if (!ss) return { success: false, error: "Spreadsheet not found" };
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+  } catch (e) {
+    return { success: false, error: "Spreadsheet lock timeout." };
+  }
+
+  try {
+    if (!backupName) {
+      var sheets = ss.getSheets();
+      var latestName = "";
+      for (var i = 0; i < sheets.length; i++) {
+        var sName = sheets[i].getName();
+        if (sName.indexOf("Accounts_backup_") === 0 && sName > latestName) {
+          latestName = sName;
+        }
+      }
+      backupName = latestName;
+    }
+
+    if (!backupName) {
+      return { success: false, error: "No previous backup found to restore." };
+    }
+
+    var bSheet = ss.getSheetByName(backupName);
+    if (!bSheet || bSheet.getLastRow() <= 1) {
+      return { success: false, error: "Backup sheet '" + backupName + "' not found or empty." };
+    }
+
+    // Safety backup of current state
+    backupAccountsSheet(ss);
+
+    var bData = bSheet.getDataRange().getValues();
+    var accSheet = ss.getSheetByName("Accounts");
+    if (!accSheet) {
+      accSheet = getOrCreateSheet(ss, "Accounts", getAccountsHeader());
+    }
+
+    if (accSheet.getLastRow() > 1) {
+      accSheet.getRange(2, 1, accSheet.getLastRow() - 1, Math.max(1, accSheet.getLastColumn())).clearContent();
+    }
+
+    var restoredRows = bData.slice(1);
+    if (restoredRows.length > 0) {
+      accSheet.getRange(2, 1, restoredRows.length, restoredRows[0].length).setValues(restoredRows);
+      formatCurrencyColumn(accSheet, 4, 2, restoredRows.length);
+    }
+
+    logAuditEvent(ss, "RESTORE_OPENING_BALANCES", "account", "all", "Restored accounts from backup " + backupName, "SUCCESS");
+
+    var restoredAccounts = readAccountsFromSheet(ss);
+    return {
+      success: true,
+      message: "Restored accounts successfully from " + backupName,
+      backupName: backupName,
+      accounts: restoredAccounts
+    };
+  } catch (err) {
+    return { success: false, error: "Restore failed: " + err.message };
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e) {}
+  }
 }
 
 function getTransfersHeader() {

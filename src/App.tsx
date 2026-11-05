@@ -135,6 +135,10 @@ function MainApp() {
             onNavigateToSavings={() => setSubView('savings')}
             onSelectTransaction={(tx) => setSelectedTransaction(tx)}
             onOpenSyncModal={() => setIsSyncOpen(true)}
+            onOpenTransfer={() => setIsTransferOpen(true)}
+            onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
+            onOpenHealthModal={() => setIsHealthOpen(true)}
+            onOpenReconcileModal={() => setIsReconcileOpen(true)}
           />
         ) : currentTab === 'history' ? (
           <HistoryScreen
@@ -193,7 +197,64 @@ function MainApp() {
       <ProfileModal
         isOpen={isProfileOpen}
         onClose={() => setIsProfileOpen(false)}
+        onOpenAccountSettings={() => {
+          setIsProfileOpen(false);
+          setIsAccountSettingsOpen(true);
+        }}
+        onOpenPinSetup={() => {
+          setIsProfileOpen(false);
+          setIsPinSetupOpen(true);
+        }}
+        onOpenDataHealth={() => {
+          setIsProfileOpen(false);
+          setIsHealthOpen(true);
+        }}
+        onOpenReconcile={() => {
+          setIsProfileOpen(false);
+          setIsReconcileOpen(true);
+        }}
       />
+
+      {/* Accounts & Opening Balances Modal */}
+      <AccountSettingsModal
+        isOpen={isAccountSettingsOpen}
+        onClose={() => setIsAccountSettingsOpen(false)}
+        onOpenReconcileModal={() => setIsReconcileOpen(true)}
+        onOpenTransferModal={() => setIsTransferOpen(true)}
+      />
+
+      {/* Account Transfer Modal (e.g. ATM withdrawal SBI -> Cash) */}
+      <AccountTransferModal
+        isOpen={isTransferOpen}
+        onClose={() => setIsTransferOpen(false)}
+      />
+
+      {/* Data Health & Integrity Modal */}
+      <DataHealthModal
+        isOpen={isHealthOpen}
+        onClose={() => setIsHealthOpen(false)}
+      />
+
+      {/* Balance Reconciliation Modal */}
+      <BalanceReconciliationModal
+        isOpen={isReconcileOpen}
+        onClose={() => setIsReconcileOpen(false)}
+      />
+
+      {/* PIN Security Setup Modal */}
+      <PinSetupModal
+        isOpen={isPinSetupOpen}
+        onClose={() => setIsPinSetupOpen(false)}
+      />
+
+      {/* PIN Lock Screen Modal */}
+      {isLocked && (
+        <PinLockModal
+          isLocked={isLocked}
+          savedPinHash={state.settings?.pinHash}
+          onUnlock={() => setIsLocked(false)}
+        />
+      )}
     </div>
   );
 }

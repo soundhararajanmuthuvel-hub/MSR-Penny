@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx scripts/test-balance-calculator.ts && tsx scripts/test-family-settlements.ts && tsx scripts/test-two-way-sync.ts && tsx scripts/test-freelance-flow.ts && tsx scripts/test-shortcut-endpoint.ts && tsx scripts/test-push-and-cron.ts && tsx scripts/test-fifo-and-archive.ts"
+    "test": "tsx scripts/test-balance-calculator.ts && tsx scripts/test-family-settlements.ts && tsx scripts/test-two-way-sync.ts && tsx scripts/test-freelance-flow.ts && tsx scripts/test-shortcut-endpoint.ts && tsx scripts/test-push-and-cron.ts && tsx scripts/test-fifo-and-archive.ts && tsx scripts/test-opening-balance-flow.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

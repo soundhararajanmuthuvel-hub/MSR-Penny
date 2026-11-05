@@ -84,6 +84,24 @@ export const DataHealthModal: React.FC<DataHealthModalProps> = ({
       });
     }
 
+    // 3b. Negative Account Balances Check
+    const negativeAccounts: { name: string; balance: number }[] = [];
+    if (sbiBalance < 0) negativeAccounts.push({ name: 'SBI', balance: sbiBalance });
+    if (iobBalance < 0) negativeAccounts.push({ name: 'IOB', balance: iobBalance });
+    if (cashBalance < 0) negativeAccounts.push({ name: 'Cash', balance: cashBalance });
+
+    if (negativeAccounts.length > 0) {
+      const names = negativeAccounts.map((a) => `${a.name} (₹${a.balance})`).join(', ');
+      issues.push({
+        id: 'negative-account-balance',
+        severity: 'warning',
+        category: 'calculation_mismatch',
+        title: 'Negative Account Balance Detected',
+        description: `Negative balance found in: ${names}. This occurs when expenses exceed starting balance and income.`,
+        proposedFix: 'Adjust opening balances in Settings → Accounts, or record missing income / ATM transfers.',
+      });
+    }
+
     // 4. Missing required fields (Amount <= 0 or empty title)
     const invalidAmountOrTitle = txs.filter((t) => !t.amount || t.amount <= 0 || !t.title?.trim());
     if (invalidAmountOrTitle.length > 0) {

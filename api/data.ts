@@ -184,7 +184,24 @@ async function handleTransactions(req: any, res: any) {
 async function handleAccounts(req: any, res: any) {
   const scriptUrl = getScriptUrl(req);
 
+  // GET: Fetch accounts or backups list
   if (req.method === 'GET') {
+    if (req.query?.action === 'backups' || req.query?.backups === 'true') {
+      if (scriptUrl) {
+        try {
+          const fetchUrl = `${scriptUrl}${scriptUrl.includes('?') ? '&' : '?'}action=get_accounts_backups`;
+          const remoteRes = await fetch(fetchUrl, { method: 'GET' });
+          if (remoteRes.ok) {
+            const json: any = await remoteRes.json();
+            return res.status(200).json(json);
+          }
+        } catch (e: any) {
+          console.warn('Remote accounts backups fetch error:', e.message);
+        }
+      }
+      return res.status(200).json({ success: true, backups: [] });
+    }
+
     if (scriptUrl) {
       try {
         const fetchUrl = `${scriptUrl}${scriptUrl.includes('?') ? '&' : '?'}action=get_accounts`;
@@ -202,10 +219,79 @@ async function handleAccounts(req: any, res: any) {
     return res.status(200).json({ success: true, accounts: DEFAULT_ACCOUNTS });
   }
 
+  // POST: Save/update accounts or restore backup
   if (req.method === 'POST') {
-    const accounts = req.body?.accounts || req.body;
-    if (!Array.isArray(accounts) || accounts.length === 0) {
+    // Handle restore action
+    if (req.body?.action === 'restore_backup' || req.body?.action === 'restore_accounts_backup') {
+      if (scriptUrl) {
+        try {
+          const remoteRes = await fetch(scriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({
+              action: 'restore_accounts_backup',
+              backupName: req.body?.backupName,
+            }),
+          });
+          if (!remoteRes.ok) {
+            return res.status(502).json({
+              success: false,
+              error: `Google Apps Script returned status ${remoteRes.status}`,
+            });
+          }
+          const json: any = await remoteRes.json();
+          return res.status(json.success ? 200 : 500).json(json);
+        } catch (err: any) {
+          return res.status(502).json({
+            success: false,
+            error: `Failed to restore accounts backup: ${err.message}`,
+          });
+        }
+      }
+      return res.status(200).json({ success: true, message: 'Restore executed locally.' });
+    }
+
+    const rawAccounts = req.body?.accounts || req.body;
+    if (!Array.isArray(rawAccounts) || rawAccounts.length === 0) {
       return res.status(400).json({ success: false, error: 'Accounts array is required.' });
+    }
+
+    // Server-side validation: Allowed accounts & non-negative numbers
+    const allowedAccountIds = new Set(['acc-sbi', 'acc-iob', 'acc-cash']);
+    const sanitizedAccounts = [];
+
+    for (const a of rawAccounts) {
+      if (!a.id || !allowedAccountIds.has(a.id)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid account ID '${a?.id}'. Allowed accounts are SBI, IOB, and Cash.`,
+        });
+      }
+
+      const bal = Number(a.openingBalance);
+      if (isNaN(bal) || bal < 0) {
+        return res.status(400).json({
+          success: false,
+          error: `Opening balance for ${a.name || a.id} must be a non-negative number.`,
+        });
+      }
+
+      const dateStr = String(a.openingDate || '').trim();
+      if (dateStr && !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return res.status(400).json({
+          success: false,
+          error: `Opening date for ${a.name || a.id} must be in YYYY-MM-DD format.`,
+        });
+      }
+
+      sanitizedAccounts.push({
+        id: a.id,
+        name: String(a.name || a.id).trim(),
+        type: a.type === 'cash' ? 'cash' : 'bank',
+        openingBalance: Math.round(bal * 100) / 100,
+        openingDate: dateStr || '2026-10-01',
+        active: a.active !== false,
+      });
     }
 
     if (scriptUrl) {
@@ -213,7 +299,7 @@ async function handleAccounts(req: any, res: any) {
         const remoteRes = await fetch(scriptUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ action: 'save_accounts', accounts }),
+          body: JSON.stringify({ action: 'save_accounts', accounts: sanitizedAccounts }),
         });
         if (!remoteRes.ok) {
           return res.status(502).json({
@@ -233,8 +319,8 @@ async function handleAccounts(req: any, res: any) {
 
     return res.status(200).json({
       success: true,
-      accounts,
-      message: 'Accounts saved locally.',
+      accounts: sanitizedAccounts,
+      message: 'Accounts saved locally (Google Sheets not configured).',
     });
   }
 

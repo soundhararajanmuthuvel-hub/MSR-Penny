@@ -404,3 +404,120 @@ export function calculateFinancialOverview(params: CalculateBalancesParams): Fin
 export function wouldOverdrawAccount(currentBalance: number, spendAmount: number): boolean {
   return currentBalance - spendAmount < 0;
 }
+
+/**
+ * Validates opening balance input according to strict financial rules:
+ * - Must be non-empty and numeric
+ * - Must be >= 0 (no negative starting balances)
+ * - Must have at most 2 decimal places
+ */
+export function validateOpeningBalanceInput(val: string | number): { isValid: boolean; amount: number; error?: string } {
+  if (val === undefined || val === null || String(val).trim() === '') {
+    return { isValid: false, amount: 0, error: 'Opening balance cannot be blank.' };
+  }
+
+  const cleanStr = String(val).replace(/,/g, '').trim();
+  const num = Number(cleanStr);
+
+  if (isNaN(num)) {
+    return { isValid: false, amount: 0, error: 'Please enter a valid numeric amount.' };
+  }
+
+  if (num < 0) {
+    return { isValid: false, amount: num, error: 'Opening balance cannot be negative.' };
+  }
+
+  // Check decimal places (at most 2 decimals allowed)
+  if (cleanStr.includes('.')) {
+    const decimalPart = cleanStr.split('.')[1];
+    if (decimalPart && decimalPart.length > 2) {
+      return { isValid: false, amount: num, error: 'Maximum 2 decimal places allowed.' };
+    }
+  }
+
+  return { isValid: true, amount: Math.round(num * 100) / 100 };
+}
+
+/**
+ * Computes suggested new opening balance to match user's real balance:
+ *   suggestedOpening = currentOpening + (realBalance - currentComputedBalance)
+ *
+ * If suggestedOpening < 0, flags isNegative so UI can warn or suggest reconciliation.
+ */
+export function computeMatchRealOpening(
+  currentOpening: number,
+  currentComputedBalance: number,
+  realBalance: number
+): { suggestedOpening: number; difference: number; isNegative: boolean } {
+  const difference = Math.round((realBalance - currentComputedBalance) * 100) / 100;
+  const suggestedOpening = Math.round((currentOpening + difference) * 100) / 100;
+  return {
+    suggestedOpening: Math.max(0, suggestedOpening),
+    difference,
+    isNegative: suggestedOpening < 0,
+  };
+}
+
+/**
+ * Heuristic to detect an unrecorded ATM withdrawal:
+ * When Cash in the app has a negative balance or deficit (cashDifference > 0 or cashBalance < 0)
+ * AND SBI has a surplus (sbiDifference < 0 or sbiBalance is sufficient).
+ */
+export function detectPotentialAtmWithdrawal(params: {
+  sbiDifference?: number;
+  cashDifference?: number;
+  sbiBalance: number;
+  cashBalance: number;
+  realSbi?: number;
+  realCash?: number;
+}): { isDetected: boolean; suggestedAmount: number; explanation: string } {
+  const { sbiDifference = 0, cashDifference = 0, sbiBalance, cashBalance, realSbi, realCash } = params;
+
+  // Case 1: Cash is negative in app (e.g. -68), suggesting money was spent without an ATM withdrawal / transfer
+  if (cashBalance < 0) {
+    const deficit = Math.abs(cashBalance);
+    // Typical ATM withdrawals are rounded to 100s or 500s
+    const suggestedRound = Math.ceil(deficit / 100) * 100;
+    const suggestedAmount = Math.max(suggestedRound, deficit);
+
+    return {
+      isDetected: true,
+      suggestedAmount,
+      explanation: `Cash shows a negative balance of ₹${deficit.toLocaleString('en-IN')}. If you withdrew cash from SBI at an ATM, record a Transfer (SBI → Cash) instead of changing opening balances.`,
+    };
+  }
+
+  // Case 2: User entered real balances where Cash has excess (cashDifference > 0) and SBI has deficit (sbiDifference < 0)
+  if (cashDifference > 0 && sbiDifference < 0) {
+    const candidateAmount = Math.min(cashDifference, Math.abs(sbiDifference));
+    if (candidateAmount >= 100) {
+      return {
+        isDetected: true,
+        suggestedAmount: candidateAmount,
+        explanation: `You have ₹${cashDifference.toLocaleString('en-IN')} more cash and ₹${Math.abs(sbiDifference).toLocaleString('en-IN')} less in SBI than recorded. This looks like an unrecorded ATM withdrawal of ₹${candidateAmount.toLocaleString('en-IN')} (SBI → Cash).`,
+      };
+    }
+  }
+
+  return { isDetected: false, suggestedAmount: 0, explanation: '' };
+}
+
+/**
+ * Returns list of transactions dated strictly before their account's opening date.
+ */
+export function getPreOpeningTransactions(
+  transactions: Transaction[],
+  accountOpeningDates: Record<string, string>
+): Transaction[] {
+  return transactions.filter((tx) => {
+    if (tx.deleted) return false;
+    let accId = tx.accountId;
+    if (!accId) {
+      if (tx.paymentMethod === 'cash') accId = 'acc-cash';
+      else if (tx.paymentMethod === 'upi') accId = 'acc-sbi';
+    }
+    const opDate = accId ? accountOpeningDates[accId] : undefined;
+    return isBeforeOpeningDate(tx.date, opDate);
+  });
+}
+

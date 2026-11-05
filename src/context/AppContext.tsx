@@ -58,7 +58,9 @@ interface AppContextType {
   datedBeforeOpeningWarnings: number;
   unassignedTransactionsCount: number;
 
-  saveAccounts: (accounts: Account[]) => Promise<boolean>;
+  saveAccounts: (accounts: Account[]) => Promise<{ success: boolean; accounts?: Account[]; error?: string; backupName?: string }>;
+  restoreAccountsBackup: (backupName?: string) => Promise<{ success: boolean; accounts?: Account[]; error?: string }>;
+  fetchAccountsBackups: () => Promise<string[]>;
   saveTransfer: (transfer: Omit<Transfer, 'id' | 'createdAt'>) => Promise<{ success: boolean; transfer?: Transfer; error?: string }>;
   deleteTransfer: (id: string) => Promise<boolean>;
   // Computed Financial Metrics
@@ -1133,37 +1135,113 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return true;
   };
 
-  const saveAccounts = async (accountsToSave: Account[]): Promise<boolean> => {
-    setState((prev) => ({
-      ...prev,
-      accounts: accountsToSave,
-    }));
-
+  const saveAccounts = async (
+    accountsToSave: Account[]
+  ): Promise<{ success: boolean; accounts?: Account[]; error?: string; backupName?: string }> => {
     try {
-      await fetch('/api/accounts', {
+      const res = await fetch('/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accounts: accountsToSave }),
       });
-    } catch {}
 
-    const envDefaults = getEffectiveEnvSettings();
-    const scriptUrl = (state.settings?.googleAppsScriptUrl || envDefaults.googleAppsScriptUrl || '').trim();
-    if (scriptUrl) {
-      try {
-        await fetch(scriptUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            action: 'save_accounts',
-            accounts: accountsToSave,
-          }),
-        });
-      } catch (err: any) {
-        console.warn('Google Sheets accounts sync deferred:', err?.message);
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        return {
+          success: false,
+          error: errJson.error || `Server responded with HTTP ${res.status}`,
+        };
       }
+
+      const json = await res.json();
+      if (!json.success) {
+        return {
+          success: false,
+          error: json.error || 'Failed to save accounts to backend.',
+        };
+      }
+
+      // Update local state ONLY with verified accounts returned from backend
+      const verifiedAccounts = Array.isArray(json.accounts) && json.accounts.length > 0 ? json.accounts : accountsToSave;
+      setState((prev) => ({
+        ...prev,
+        accounts: verifiedAccounts,
+      }));
+
+      return {
+        success: true,
+        accounts: verifiedAccounts,
+        backupName: json.backupName,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error connecting to accounts API: ${err.message}`,
+      };
     }
-    return true;
+  };
+
+  const restoreAccountsBackup = async (
+    backupName?: string
+  ): Promise<{ success: boolean; accounts?: Account[]; error?: string }> => {
+    try {
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'restore_backup',
+          backupName,
+        }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        return {
+          success: false,
+          error: errJson.error || `Server responded with HTTP ${res.status}`,
+        };
+      }
+
+      const json = await res.json();
+      if (!json.success) {
+        return {
+          success: false,
+          error: json.error || 'Failed to restore accounts from backup.',
+        };
+      }
+
+      if (Array.isArray(json.accounts) && json.accounts.length > 0) {
+        setState((prev) => ({
+          ...prev,
+          accounts: json.accounts,
+        }));
+      }
+
+      return {
+        success: true,
+        accounts: json.accounts,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error restoring backup: ${err.message}`,
+      };
+    }
+  };
+
+  const fetchAccountsBackups = async (): Promise<string[]> => {
+    try {
+      const res = await fetch('/api/accounts?action=backups');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.backups)) {
+          return json.backups;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch accounts backups:', err);
+    }
+    return [];
   };
 
   const saveTransfer = async (transferData: Omit<Transfer, 'id' | 'createdAt'>): Promise<{ success: boolean; transfer?: Transfer; error?: string }> => {
@@ -1634,6 +1712,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         accounts: state.accounts || DEFAULT_ACCOUNTS,
         transfers: state.transfers || [],
         saveAccounts,
+        restoreAccountsBackup,
+        fetchAccountsBackups,
         saveTransfer,
         deleteTransfer,
         settledArchive: state.settledArchive || [],
