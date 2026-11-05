@@ -134,9 +134,13 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
     }
 
     if (isOverdraw) {
-      const proceedOverdraw = window.confirm(
-        `Overdraft Warning: This expense of ₹${currentAmount.toLocaleString('en-IN')} exceeds your current ${selectedAccount?.name || 'account'} balance of ₹${currentAccountBal.toLocaleString('en-IN')} (projected: -₹${(currentAmount - currentAccountBal).toLocaleString('en-IN')}). Proceed anyway?`
-      );
+      const projectedDeficit = currentAmount - currentAccountBal;
+      const isCash = selectedAccountId === 'acc-cash' || paymentMethod === 'cash';
+      const promptMsg = isCash
+        ? `⚠️ Cash Balance Warning:\nThis ₹${currentAmount.toLocaleString('en-IN')} cash expense exceeds your current Cash in hand (₹${currentAccountBal.toLocaleString('en-IN')}).\nProjected Cash balance will be -₹${projectedDeficit.toLocaleString('en-IN')}.\n\nTip: If you withdrew cash from an ATM, record a Transfer (SBI → Cash) first!\n\nDo you want to proceed and save this cash expense anyway?`
+        : `⚠️ Overdraft Warning:\nThis expense of ₹${currentAmount.toLocaleString('en-IN')} exceeds your current ${selectedAccount?.name || 'account'} balance of ₹${currentAccountBal.toLocaleString('en-IN')} (projected: -₹${projectedDeficit.toLocaleString('en-IN')}).\n\nProceed anyway?`;
+
+      const proceedOverdraw = window.confirm(promptMsg);
       if (!proceedOverdraw) return;
     }
 
@@ -398,10 +402,17 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
                 warning
               </span>
               <div>
-                <p className="font-bold">Overdraft Warning</p>
+                <p className="font-bold">
+                  {selectedAccountId === 'acc-cash' ? 'Cash Deficit Warning' : 'Overdraft Warning'}
+                </p>
                 <p className="text-[11px] mt-0.5 leading-snug">
                   This expense of ₹{currentAmount.toLocaleString('en-IN')} exceeds your current {selectedAccount?.name} balance (₹{currentAccountBal.toLocaleString('en-IN')}). Projected: -₹{(currentAmount - currentAccountBal).toLocaleString('en-IN')}.
                 </p>
+                {selectedAccountId === 'acc-cash' && (
+                  <p className="text-[10px] text-[#006948] font-bold mt-1">
+                    💡 Did you withdraw cash from an ATM? Record an ATM withdrawal (Transfer SBI → Cash) first to keep cash positive!
+                  </p>
+                )}
               </div>
             </div>
           )}

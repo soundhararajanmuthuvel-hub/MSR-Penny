@@ -33,6 +33,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     totalIncome,
     incomeCount,
     currentMonthSpent,
+    currentMonthFamilySpent,
     totalFamilyOutstanding,
     monthlyBudget,
     budgetUsedPercent,
@@ -214,10 +215,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <span className="text-[10px] font-bold text-[#3e4942] block uppercase tracking-wider truncate">
               SBI (Main)
             </span>
-            <span className="text-[15px] font-bold text-[#121c2a] block tabular-nums mt-0.5">
+            <span className={`text-[15px] font-bold block tabular-nums mt-0.5 ${sbiBalance < 0 ? 'text-[#ba1a1a]' : 'text-[#121c2a]'}`}>
               ₹{sbiBalance.toLocaleString('en-IN')}
             </span>
-            <span className="text-[9px] text-[#006948] font-medium">Bank account</span>
+            {sbiBalance < 0 ? (
+              <button
+                type="button"
+                onClick={onOpenAccountSettings || onOpenReconcileModal}
+                className="mt-1 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[8px] font-bold uppercase tracking-wider block hover:bg-red-200 transition-colors cursor-pointer"
+              >
+                Check balance
+              </button>
+            ) : (
+              <span className="text-[9px] text-[#006948] font-medium">Bank account</span>
+            )}
           </div>
 
           {/* IOB */}
@@ -225,10 +236,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <span className="text-[10px] font-bold text-[#3e4942] block uppercase tracking-wider truncate">
               IOB (Second)
             </span>
-            <span className="text-[15px] font-bold text-[#121c2a] block tabular-nums mt-0.5">
+            <span className={`text-[15px] font-bold block tabular-nums mt-0.5 ${iobBalance < 0 ? 'text-[#ba1a1a]' : 'text-[#121c2a]'}`}>
               ₹{iobBalance.toLocaleString('en-IN')}
             </span>
-            <span className="text-[9px] text-[#006948] font-medium">Bank account</span>
+            {iobBalance < 0 ? (
+              <button
+                type="button"
+                onClick={onOpenAccountSettings || onOpenReconcileModal}
+                className="mt-1 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[8px] font-bold uppercase tracking-wider block hover:bg-red-200 transition-colors cursor-pointer"
+              >
+                Check balance
+              </button>
+            ) : (
+              <span className="text-[9px] text-[#006948] font-medium">Bank account</span>
+            )}
           </div>
 
           {/* Cash */}
@@ -236,10 +257,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <span className="text-[10px] font-bold text-[#3e4942] block uppercase tracking-wider truncate">
               Cash (Wallet)
             </span>
-            <span className="text-[15px] font-bold text-[#121c2a] block tabular-nums mt-0.5">
+            <span className={`text-[15px] font-bold block tabular-nums mt-0.5 ${cashBalance < 0 ? 'text-[#ba1a1a]' : 'text-[#121c2a]'}`}>
               ₹{cashBalance.toLocaleString('en-IN')}
             </span>
-            <span className="text-[9px] text-[#006948] font-medium">Physical cash</span>
+            {cashBalance < 0 ? (
+              <button
+                type="button"
+                onClick={onOpenAccountSettings || onOpenReconcileModal}
+                className="mt-1 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[8px] font-bold uppercase tracking-wider block hover:bg-red-200 transition-colors cursor-pointer"
+              >
+                Check balance
+              </button>
+            ) : (
+              <span className="text-[9px] text-[#006948] font-medium">Physical cash</span>
+            )}
           </div>
         </div>
       </div>
@@ -249,7 +280,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         {/* Spent Card */}
         <div className="bg-white rounded-xl p-3 flex flex-col justify-between shadow-sm border border-[#dfe9fc]/50">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-[#3e4942] font-medium">Spent</span>
+            <span className="text-[11px] text-[#3e4942] font-medium">Personal Spent</span>
             <div className="w-6 h-6 rounded-full bg-[#ffdad6]/60 flex items-center justify-center">
               <span className="material-symbols-outlined text-[14px] text-[#ba1a1a]">trending_down</span>
             </div>
@@ -258,7 +289,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <p className="text-[17px] font-bold text-[#ba1a1a] tracking-tight tabular-nums">
               ₹{currentMonthSpent.toLocaleString('en-IN')}
             </p>
-            <span className="text-[10px] text-[#3e4942]">{currentMonthName} spend</span>
+            <span className="text-[9px] text-[#3e4942] block leading-tight mt-0.5">
+              {currentMonthFamilySpent > 0
+                ? `+ ₹${currentMonthFamilySpent.toLocaleString('en-IN')} for family`
+                : `${currentMonthName} personal`}
+            </span>
           </div>
         </div>
 

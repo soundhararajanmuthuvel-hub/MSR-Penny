@@ -67,6 +67,7 @@ interface AppContextType {
   totalIncome: number;
   incomeCount: number;
   currentMonthSpent: number;
+  currentMonthFamilySpent: number;
   availableBalance: number;
   monthlyBudget: number;
   budgetUsedPercent: number;
@@ -360,10 +361,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const currentDay = now.getDate();
     const daysRemainingInMonth = Math.max(0, totalDaysInMonth - currentDay);
 
-    // Filter transactions for current month
+    // Filter transactions for current month using Asia/Kolkata calendar year-month (YYYY-MM)
+    const currentYearMonth = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+    }).format(now);
+
     const currentMonthTxs = transactions.filter((t) => {
-      const d = new Date(t.date);
-      return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
+      if (!t.date) return false;
+      return t.date.slice(0, 7) === currentYearMonth;
     });
 
     // 1. Total Income (Inflows) for current month - strictly ordinary income, NOT family repayments!
@@ -376,6 +383,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       (t) => t.type === 'expense' && !t.isAppaReimbursable && !t.isFamilyReimbursable
     );
     const currentMonthSpent = personalExpenses.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    // 2b. Family Expenses Paid by User (current month)
+    const familyExpensesThisMonth = currentMonthTxs.filter(
+      (t) => t.type === 'expense' && (t.isAppaReimbursable || t.isFamilyReimbursable)
+    );
+    const currentMonthFamilySpent = familyExpensesThisMonth.reduce(
+      (sum, t) => sum + (Number(t.amount) || 0),
+      0
+    );
 
     // 3. Available Balance = Income minus Personal Spent
     const availableBalance = Math.max(0, totalIncome - currentMonthSpent);
@@ -430,6 +446,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       totalIncome,
       incomeCount,
       currentMonthSpent,
+      currentMonthFamilySpent,
       availableBalance,
       monthlyBudget,
       budgetUsedPercent,

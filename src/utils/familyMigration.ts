@@ -182,6 +182,11 @@ export function calculateFamilyBalances(
   Object.values(contactBalances).forEach((bal) => {
     bal.outstandingBalance = Math.max(0, bal.totalReimbursable - bal.totalRepaid);
     totalFamilyOutstanding += bal.outstandingBalance;
+
+    // Strict Rule: If outstanding is 0, all expenses are fully covered -> pendingCount is 0!
+    if (bal.outstandingBalance <= 0) {
+      bal.pendingCount = 0;
+    }
   });
 
   return {

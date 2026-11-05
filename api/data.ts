@@ -744,6 +744,20 @@ export default async function handler(req: any, res: any) {
       mainRoute = segments[0] || '';
     }
 
+    if (mainRoute === 'data' || !mainRoute) {
+      if (req.query?.action) {
+        const act = String(req.query.action).toLowerCase();
+        if (act === 'get_all_data' || act === 'state') mainRoute = 'state';
+        else if (act === 'health') mainRoute = 'health';
+        else if (act === 'accounts') mainRoute = 'accounts';
+        else if (act === 'contacts') mainRoute = 'contacts';
+        else if (act === 'transfers') mainRoute = 'transfers';
+        else mainRoute = act;
+      } else {
+        mainRoute = 'state';
+      }
+    }
+
     mainRoute = mainRoute.toLowerCase().trim();
 
     switch (mainRoute) {

@@ -552,6 +552,8 @@ function doGet(e) {
       var contacts = readFamilyContactsFromSheet(ss);
       var balanceInfo = calculateFamilyBalancesFromSheet(ss);
       var freelanceJobs = readFreelanceProjectsFromSheet(ss);
+      var accounts = readAccountsFromSheet(ss);
+      var transfers = readTransfersFromSheet(ss);
 
       return jsonResponse({
         success: true,

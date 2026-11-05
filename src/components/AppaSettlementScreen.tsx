@@ -71,6 +71,7 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
 
   // Expand transactions for member
   const [expandedContactId, setExpandedContactId] = useState<string | null>(null);
+  const [showSettledSection, setShowSettledSection] = useState<boolean>(true);
 
   // Auto-Archive Confirmation State
   const [contactToArchive, setContactToArchive] = useState<FamilyContact | null>(null);
@@ -530,9 +531,12 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
 
           {/* Family Member Cards List */}
           <div className="space-y-3">
-            {activeContacts
-              .filter((c) => selectedMemberFilter === 'all' || selectedMemberFilter === c.id)
-              .map((contact) => {
+            {(() => {
+              const contactsToDisplay = activeContacts.filter(
+                (c) => selectedMemberFilter === 'all' || selectedMemberFilter === c.id
+              );
+
+              const renderMemberCard = (contact: typeof activeContacts[0]) => {
                 const bal = familyBalances[contact.id] || {
                   contact,
                   totalReimbursable: 0,
@@ -583,7 +587,7 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
 
                       <div className="text-right">
                         <span className="text-[10px] text-[#3e4942] block font-medium">Balance</span>
-                        <span className="text-[20px] font-bold text-[#006948] tabular-nums">
+                        <span className={`text-[20px] font-bold tabular-nums ${bal.outstandingBalance > 0 ? 'text-[#006948]' : 'text-slate-400'}`}>
                           ₹{bal.outstandingBalance.toLocaleString('en-IN')}
                         </span>
                       </div>
@@ -601,7 +605,9 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
                       </div>
                       <div>
                         <span className="text-[#3e4942] block">Pending</span>
-                        <strong className="text-[#894d00]">{bal.pendingCount} items</strong>
+                        <strong className={bal.pendingCount > 0 ? 'text-[#894d00]' : 'text-emerald-700'}>
+                          {bal.pendingCount} items
+                        </strong>
                       </div>
                     </div>
 
@@ -661,7 +667,6 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
 
                         <div className="divide-y divide-[#dfe9fc]/60 max-h-64 overflow-y-auto">
                           {memberTransactions.map((rawTx) => {
-                            // Retrieve FIFO-allocated version if available
                             const tx = allocatedTxMap.get(rawTx.id) || rawTx;
                             const isRepay = tx.type === 'repayment';
                             const isSettled = tx.allocationStatus === 'settled' || tx.appaSettled || tx.settlementStatus === 'settled';
@@ -737,7 +742,49 @@ export const FamilySettlementScreen: React.FC<FamilySettlementScreenProps> = ({
                     )}
                   </div>
                 );
-              })}
+              };
+
+              if (selectedMemberFilter !== 'all') {
+                return contactsToDisplay.map(renderMemberCard);
+              }
+
+              const pendingContacts = contactsToDisplay.filter(
+                (c) => (familyBalances[c.id]?.outstandingBalance || 0) > 0
+              );
+              const settledContacts = contactsToDisplay.filter(
+                (c) => (familyBalances[c.id]?.outstandingBalance || 0) <= 0
+              );
+
+              return (
+                <>
+                  {pendingContacts.map(renderMemberCard)}
+
+                  {settledContacts.length > 0 && (
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowSettledSection(!showSettledSection)}
+                        className="w-full flex items-center justify-between p-3 rounded-xl bg-[#eff3ff]/70 hover:bg-[#dfe9fc] text-[12px] font-semibold text-[#3e4942] transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-[16px] text-[#006948]">check_circle</span>
+                          <span>Settled Members ({settledContacts.length})</span>
+                        </span>
+                        <span className="material-symbols-outlined text-[16px]">
+                          {showSettledSection ? 'expand_less' : 'expand_more'}
+                        </span>
+                      </button>
+
+                      {showSettledSection && (
+                        <div className="space-y-3 mt-3">
+                          {settledContacts.map(renderMemberCard)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </>
       )}

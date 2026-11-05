@@ -23,6 +23,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     state,
     totalIncome,
     currentMonthSpent,
+    currentMonthFamilySpent,
     totalFamilyOutstanding,
     totalFamilyExpensesWaiting,
     totalFamilyRepaid,
@@ -349,7 +350,9 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
             <span className="text-[18px] font-bold text-[#ba1a1a] tabular-nums">
               ₹{currentMonthSpent.toLocaleString('en-IN')}
             </span>
-            <span className="text-[9px] text-[#3e4942] block mt-0.5">Excludes family split</span>
+            <span className="text-[9px] text-[#3e4942] block mt-0.5">
+              {currentMonthFamilySpent > 0 ? `+ ₹${currentMonthFamilySpent.toLocaleString('en-IN')} family outflows` : 'Excludes family split'}
+            </span>
           </div>
 
           <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/50">
@@ -361,11 +364,11 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
           </div>
 
           <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/50">
-            <span className="text-[10px] text-[#3e4942] block">Available Balance</span>
+            <span className="text-[10px] text-[#3e4942] block">This Month Net</span>
             <span className="text-[18px] font-bold text-[#121c2a] tabular-nums">
-              ₹{availableBalance.toLocaleString('en-IN')}
+              ₹{(totalIncome - currentMonthSpent).toLocaleString('en-IN')}
             </span>
-            <span className="text-[9px] text-[#3e4942] block mt-0.5">Income − Personal spent</span>
+            <span className="text-[9px] text-[#3e4942] block mt-0.5">Inflows − personal spent (this month)</span>
           </div>
         </div>
       </div>
