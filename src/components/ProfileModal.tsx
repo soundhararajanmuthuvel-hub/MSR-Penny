@@ -87,8 +87,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <img src="/pwa-192x192.png" alt="MSR Penny" className="w-full h-full object-cover" />
             </div>
             <div>
-              <h3 className="text-[16px] font-bold text-[#121c2a]">MSR Penny Profile</h3>
-              <p className="text-[11px] text-[#3e4942]">Single-user private finance PWA</p>
+              <h3 className="text-[16px] font-bold text-[#121c2a]">MSR Penny</h3>
+              <p className="text-[11px] text-[#006948] font-medium">Smart Financial Tracking. Clearer Decisions.</p>
             </div>
           </div>
           <button
@@ -102,7 +102,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         <div className="space-y-3">
           <div>
             <label className="text-[11px] font-semibold text-[#3e4942] uppercase tracking-wider block mb-1">
-              Your Name
+              Owner Name
             </label>
             <input
               type="text"
@@ -138,15 +138,26 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             />
           </div>
 
-          <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/50 text-[11px] text-[#3e4942] space-y-1">
+          <div className="bg-[#eff3ff] p-3 rounded-xl border border-[#dfe9fc]/50 text-[11px] text-[#3e4942] space-y-1.5">
             <div className="flex items-center justify-between">
               <span><strong>Google Sheets:</strong></span>
               <span className={`font-bold ${scriptUrl ? 'text-[#006948]' : 'text-[#b7791f]'}`}>
-                {scriptUrl ? 'Connected' : 'Not configured'}
+                {scriptUrl ? 'Connected (Dual-Sync)' : 'Local / Demo Mode'}
               </span>
             </div>
-            <p><strong>App Identity:</strong> MSR Penny PWA</p>
-            <p><strong>Email:</strong> soundhararajanmuthuvel@gmail.com</p>
+            <div className="flex items-center justify-between">
+              <span><strong>Developer:</strong> Soundhararajan Muthuvel</span>
+              <a
+                href="https://github.com/soundhararajanmuthuvel-hub"
+                target="_blank"
+                rel="noreferrer"
+                className="text-[#006948] hover:underline font-semibold flex items-center gap-0.5"
+              >
+                <span>GitHub</span>
+                <span className="material-symbols-outlined text-[13px]">open_in_new</span>
+              </a>
+            </div>
+            <p className="text-[10px] text-[#6d7a72]">Single-owner personal finance manager with Google Sheets as source of truth.</p>
           </div>
 
           {message && (

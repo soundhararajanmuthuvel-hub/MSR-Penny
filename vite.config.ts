@@ -14,9 +14,9 @@ export default defineConfig(() => {
         includeAssets: ['favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png', 'msr-penny-logo.png'],
         manifest: {
           id: '/',
-          name: 'MSR Penny',
+          name: 'MSR Penny — Smart Financial Tracking',
           short_name: 'MSR Penny',
-          description: 'MSR Penny - Personal finance PWA for tracking freelance income, family settlements, emergency funds, and daily expenses.',
+          description: 'A modern personal finance and expense management platform designed to simplify financial tracking, family settlements, freelance income, and financial reporting.',
           theme_color: '#006948',
           background_color: '#f8f9ff',
           display: 'standalone',

@@ -1,7 +1,14 @@
 {
   "name": "msr-penny",
   "private": true,
-  "version": "0.0.0",
+  "version": "3.1.0",
+  "description": "A modern personal finance and expense management platform designed to simplify financial tracking, family settlements, freelance income, and financial reporting.",
+  "author": "Soundhararajan Muthuvel (MSR) <https://github.com/soundhararajanmuthuvel-hub>",
+  "homepage": "https://msr-penny.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/soundhararajanmuthuvel-hub/MSR-Penny.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

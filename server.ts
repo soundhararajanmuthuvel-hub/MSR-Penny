@@ -9,9 +9,7 @@ import { DEFAULT_ACCOUNTS } from './src/utils/balanceCalculator';
 import shortcutHandler from './api/shortcut';
 import { subscribeHandler, testPushHandler } from './api/push';
 import reminderCronHandler from './api/cron';
-import archiveHandler from './api/_lib/handlers/archive';
-import reconcileHandler from './api/_lib/handlers/reconcile';
-import healthHandler from './api/_lib/handlers/health';
+import dataHandler from './api/data';
 
 dotenv.config();
 
@@ -436,10 +434,11 @@ app.all('/api/push/subscribe', (req: Request, res: Response) => subscribeHandler
 app.all('/api/push/test', (req: Request, res: Response) => testPushHandler(req as any, res as any));
 app.all('/api/cron/reminder', (req: Request, res: Response) => reminderCronHandler(req as any, res as any));
 
-// v3 Archive, Reconcile & Data Health Endpoints
-app.all('/api/archive', (req: Request, res: Response) => archiveHandler(req as any, res as any));
-app.all('/api/reconcile', (req: Request, res: Response) => reconcileHandler(req as any, res as any));
-app.all('/api/health', (req: Request, res: Response) => healthHandler(req as any, res as any));
+// v3 Archive, Reconcile & Data Health Endpoints (Dispatched to Consolidated Data Handler)
+app.all('/api/archive', (req: Request, res: Response) => dataHandler(req as any, res as any));
+app.all('/api/reconcile', (req: Request, res: Response) => dataHandler(req as any, res as any));
+app.all('/api/health', (req: Request, res: Response) => dataHandler(req as any, res as any));
+app.all('/api/data', (req: Request, res: Response) => dataHandler(req as any, res as any));
 
 // Mount Vite in dev mode or serve static files in production
 async function startServer() {
