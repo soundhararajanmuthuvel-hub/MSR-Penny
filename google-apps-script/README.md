@@ -1,105 +1,80 @@
-# MSR Penny — Google Apps Script Backend
+# MSR Penny — Modular Google Apps Script Project
 
-This directory contains the Google Apps Script (`Code.gs`) source code that powers the serverless Google Sheets integration for **MSR Penny**.
+**Developer:** Soundhararajan Muthuvel (MSR)  
+**Version:** 3.1.0  
+**Target Runtime:** Google Apps Script V8 Engine  
 
 ---
 
-## 1. Architectural Overview
-
-Google Sheets serves as the persistent, audit-trailed database and single source of truth for MSR Penny. Google Apps Script provides the serverless HTTP interface (Web App) handling bidirectional data synchronization, atomic transactions, account balance computations, and family settlement records.
+## 1. Project Directory Structure
 
 ```
-┌─────────────────────────────────┐
-│     MSR Penny Client (PWA)      │
-│     React 19 + TypeScript       │
-└────────────────┬────────────────┘
-                 │
-                 ▼ HTTPS (JSON payload)
-┌─────────────────────────────────┐
-│     Vercel Serverless / Lambda  │
-│     /api/data  (Consolidated)   │
-└────────────────┬────────────────┘
-                 │
-                 ▼ HTTPS Webhook (doGet / doPost)
-┌─────────────────────────────────┐
-│     Google Apps Script Web App  │
-│     (Code.gs)                   │
-└────────────────┬────────────────┘
-                 │
-                 ▼ Google Spreadsheet API
-┌─────────────────────────────────┐
-│     Google Sheets               │
-│     - Transactions              │
-│     - Accounts                  │
-│     - Transfers                 │
-│     - Family Contacts           │
-│     - Freelance Projects        │
-│     - Savings Goals             │
-│     - Settlement Archive        │
-│     - Audit Logs                │
-└─────────────────────────────────┘
+google-apps-script/
+├── appsscript.json            # Google Apps Script project manifest
+├── README.md                  # Comprehensive deployment and architecture manual
+│
+├── src/                       # Modular Google Apps Script Source Files
+│   ├── Code.gs                # Main entry point (doGet, doPost, onOpen, routing)
+│   ├── config.gs              # Sheet names, constants, and target spreadsheet resolver
+│   ├── spreadsheetService.gs  # Low-level spreadsheet schema and range formatting
+│   ├── transactionService.gs  # Transaction CRUD, deduplication, and batch sync
+│   ├── settlementService.gs   # Family settlements, FIFO repayment allocation, and archive
+│   ├── freelanceService.gs    # Freelance projects, accounts, transfers, and health check
+│   ├── validationService.gs   # Payload, date, amount, and account schema validation
+│   ├── responseUtils.gs       # Standardized JSON response helpers
+│   └── security.gs            # Formula injection sanitization and script lock management
+│
+└── tests/
+    └── testData.gs            # Realistic, fictional demo data seeder & clear utility
 ```
 
 ---
 
-## 2. Security & Privacy Architecture
+## 2. Deployment Workflows
 
-### Production vs Demo Separation
-- **Private Personal Spreadsheet**: Your real financial data (actual bank balances, family contact numbers, personal expenses) resides in your private personal Google Sheet. Its Web App URL is strictly stored in **server-side environment variables** (`GOOGLE_APPS_SCRIPT_URL` in Vercel) and is **never committed to Git**.
-- **Public Demonstration Mode**: For IT industry showcases, code reviews, and public demonstrations, the frontend runs with mock/demo seed data or connects to a dedicated, sanitized demo spreadsheet with fictional records.
+You can deploy this project using either **Google Clasp CLI** (recommended for professional development) or the **Google Apps Script Web Editor** (for quick 1-click deployment).
 
-### Authentication & Token Protection
-- HTTP endpoints accept optional Bearer authentication or `X-Secret-Token` header verification matching `SHORTCUT_SECRET_TOKEN`.
-- Automated brute-force prevention and input sanitization protect against invalid rows and script injection.
-
----
-
-## 3. Deployment Instructions
-
-### Step 1: Create a Google Sheet
-1. Open [Google Sheets](https://sheets.new) and create a new spreadsheet.
-2. Name the spreadsheet: `MSR Penny Database (Demo)` or `MSR Penny Database`.
-
-### Step 2: Open Apps Script Editor
-1. In the Google Sheets menu, click **Extensions** > **Apps Script**.
-2. Replace all code in the script editor with the contents of [`Code.gs`](./Code.gs).
-
-### Step 3: Deploy as Web App
-1. Click **Deploy** > **New deployment**.
-2. Select type: **Web app**.
-3. Set description: `MSR Penny Production v3`.
-4. Set **Execute as**: `Me (your Google account)`.
-5. Set **Who has access**: `Anyone`.
-6. Click **Deploy** and authorize the required permissions for Google Drive & Google Sheets.
-7. Copy the generated **Web App URL** (format: `https://script.google.com/macros/s/.../exec`).
-
-### Step 4: Configure Environment Variables
-Set the URL in your local development or Vercel environment:
-
-```env
-# In Vercel Project Settings -> Environment Variables:
-GOOGLE_APPS_SCRIPT_URL="https://script.google.com/macros/s/.../exec"
-```
+### Option A: Professional Deployment via Google Clasp (CLI)
+1. Install `@google/clasp` globally:
+   ```bash
+   npm install -g @google/clasp
+   ```
+2. Log in with your Google account:
+   ```bash
+   clasp login
+   ```
+3. Create or clone your Apps Script project linked to your Google Sheet:
+   ```bash
+   clasp clone "YOUR_SCRIPT_ID" --rootDir google-apps-script
+   ```
+4. Push all modular files to Google Apps Script:
+   ```bash
+   cd google-apps-script
+   clasp push
+   ```
+5. Deploy a new version:
+   ```bash
+   clasp deploy --description "MSR Penny v3.1.0 Production"
+   ```
 
 ---
 
-## 4. Supported Endpoints & Actions
-
-| Method | Action (`?action=...`) | Description |
-| :--- | :--- | :--- |
-| `GET` | `get_all_data` | Atomically retrieves all accounts, transactions, contacts, freelance jobs, and settings. |
-| `GET` | `health` | Performs data integrity audits (detects orphaned references, pre-opening dates, deficits). |
-| `POST` | `sync_all` | Two-way batch sync merging offline transactions into the sheet without data loss. |
-| `POST` | `add_transaction` | Appends a single validated transaction row and recalculates ledger metrics. |
-| `POST` | `update_accounts` | Updates account metadata and opening balances (SBI, IOB, Cash). |
-| `POST` | `record_repayment` | Records family reimbursement inflow and updates FIFO settlement status. |
-| `POST` | `archive_settled` | Safely archives fully settled records into `Settled Archive` sheet preserving net balance invariants. |
-| `POST` | `reconcile_balance` | Logs bank-statement reconciliation adjustments. |
+### Option B: 1-Click Copy via Web Editor Bundle
+For developers who prefer using the web editor at `script.google.com`:
+1. Run the local bundler script:
+   ```bash
+   npm run bundle:gas
+   # Or: npx tsx scripts/bundle-apps-script.ts
+   ```
+2. This compiles the modular files in `google-apps-script/src/` into a single, production-tested [`Code.gs`](../Code.gs).
+3. Open your Google Sheet > **Extensions** > **Apps Script**.
+4. Paste the contents of `Code.gs` and click **Save**.
+5. Click **Deploy** > **New deployment** > select **Web app** > set **Who has access** to **Anyone**.
 
 ---
 
-## 5. Maintenance & Disaster Recovery
+## 3. Security & Anti-Formula Injection Safeguards
 
-- **Atomic Sheet Backups**: The script supports automatic snapshots before destructive migrations.
-- **Rollback Capabilities**: Any archived settlement batch can be restored seamlessly via `restore_archive_batch`.
-- **Local Fallback**: If the Google Apps Script endpoint is temporarily unreachable or offline, MSR Penny automatically falls back to client-side indexed storage to queue transactions for background synchronization.
+- **Formula Injection Defense:** Any cell string starting with `=`, `+`, `-`, or `@` is automatically prefixed with a single quote (`'`) in `security.gs` to prevent CSV/Formula execution.
+- **Concurrency Locking:** All `doGet` and `doPost` requests acquire a `LockService.getScriptLock()` with automatic timeouts to prevent dirty reads and race conditions during concurrent syncs.
+- **Strict Separation of Demo Data:** The project comes pre-configured with safe, fictional demo records in `testData.gs`. Never connect public test environments to your personal production spreadsheet.

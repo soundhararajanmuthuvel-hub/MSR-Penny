@@ -1,1106 +1,612 @@
 /**
- * MSR Penny — Google Apps Script Web App (Code.gs)
- * 
- * Features:
- * 1. Dual-sync with MSR Penny PWA (React / Vite / Vercel / Express).
- * 2. Automated sheets creation & schema management:
- *    - "Transactions": Complete personal, college & family transactions ledger.
- *    - "Family_Contacts": Configured family members (Appa, Amma, Chinna Akka, Periya Akka).
- *    - "Appa_Ledger": Dedicated Appa reimbursement running balance ledger.
- *    - "Freelance_Projects": Client design jobs, fees, and milestone payouts.
- *    - "Savings_Goals": Emergency fund & student savings goals.
- *    - "Summary": High-level monthly and all-time financial dashboard.
- * 3. Duplicate protection (idempotency by transaction ID).
- * 4. Deterministic multi-contact family balance calculations.
- * 5. Safe non-destructive data synchronization (never wipes database on empty sync).
- * 6. Supports both doGet (read state) and doPost (sync/save).
- * 7. Built-in Google Sheets UI menu ('🪙 MSR Penny') for instant 1-click actions!
- * 
- * 🟢 DEPLOYMENT INSTRUCTIONS:
- * 1. Open your Google Sheet, click "Extensions" -> "Apps Script".
- * 2. Paste this complete Code.gs file and save (Ctrl+S or Cmd+S).
- * 3. Click "Deploy" (top right) -> "New deployment".
- * 4. Click the gear icon next to "Select type" -> select "Web app".
- * 5. Fill in:
- *    - Description: "MSR Penny Family Settlements & Dual Sync"
- *    - Execute as: "Me" (your Google account)
- *    - Who has access: "Anyone" (CRITICAL: Must be "Anyone" so MSR Penny can push data)
- * 6. Click "Deploy", authorize permissions, and copy the "Web app URL" (ends in /exec).
- * 7. Paste this URL into MSR Penny's Sync settings.
+ * MSR Penny — Google Apps Script Web App (Production Bundle)
+ * Automatically concatenated from modular source files in google-apps-script/src/
+ * Version: 3.1.0
  */
 
-// Helper to return standardized JSON response
-function jsonResponse(data) {
-  return ContentService.createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
-}
+// ==============================================================================
+// MODULE: config.gs
+// ==============================================================================
 
 /**
- * Custom Menu inside Google Sheets
- * Appears automatically when opening the Google Sheet!
+ * MSR Penny — Google Apps Script Configuration
+ * File: config.gs
  */
-function onOpen() {
-  try {
-    var ui = SpreadsheetApp.getUi();
-    ui.createMenu('🪙 MSR Penny')
-      .addItem('🚀 Setup All Sheets (Emerald Headers)', 'setupInitialSheets')
-      .addItem('🔄 Recalculate Family Settlements & Appa Ledger', 'menuRecalculateAll')
-      .addItem('👥 Ensure Family Contacts Sheet', 'ensureFamilyContactsSheet')
-      .addItem('🏦 Ensure Accounts & Transfers Sheets', 'menuSetupAccountsAndTransfers')
-      .addItem('💾 Backup Transactions Sheet', 'createBackupTransactionsSheet')
-      .addSeparator()
-      .addItem('📥 Import / Seed Demo Data', 'seedSampleData')
-      .addItem('🗑️ Clear All Demo Data (Keep Clean Headers)', 'clearAllDataKeepHeaders')
-      .addSeparator()
-      .addItem('ℹ️ Webhook URL & Deployment Guide', 'showWebhookHelp')
-      .addToUi();
-  } catch (e) {
-    // Suppress if running in headless web context
+
+var CONFIG = {
+  APP_NAME: "MSR Penny",
+  VERSION: "3.1.0",
+  BRAND_COLOR: "#006948",
+  BRAND_TEXT_COLOR: "#ffffff",
+  TIMEZONE: "Asia/Kolkata",
+  LOCK_TIMEOUT_READ_MS: 15000,
+  LOCK_TIMEOUT_WRITE_MS: 30000,
+
+  SHEETS: {
+    TRANSACTIONS: "Transactions",
+    ACCOUNTS: "Accounts",
+    TRANSFERS: "Transfers",
+    FAMILY_CONTACTS: "Family_Contacts",
+    APPA_LEDGER: "Appa_Ledger",
+    FREELANCE: "Freelance_Projects",
+    SAVINGS: "Savings_Goals",
+    SUMMARY: "Summary",
+    SETTLED_ARCHIVE: "Settled_Archive",
+    RECONCILIATIONS: "Reconciliations",
+    AUDIT_LOG: "Audit_Log",
+    PUSH_SUBSCRIPTIONS: "Push_Subscriptions"
   }
+};
+
+/**
+ * Returns default accounts configuration.
+ */
+function getDefaultAccounts() {
+  return [
+    { id: 'acc-sbi', name: 'SBI (Main)', type: 'bank', openingBalance: 10000, openingDate: '2026-01-01', active: true },
+    { id: 'acc-iob', name: 'IOB (Second)', type: 'bank', openingBalance: 2000, openingDate: '2026-01-01', active: true },
+    { id: 'acc-cash', name: 'Cash', type: 'cash', openingBalance: 500, openingDate: '2026-01-01', active: true }
+  ];
 }
 
 /**
- * Safe spreadsheet resolver:
- * Prioritizes:
- * 1. Container-bound spreadsheet (SpreadsheetApp.getActiveSpreadsheet())
- * 2. Validated SPREADSHEET_ID stored in Script Properties
- * 3. Payload spreadsheetId / spreadsheetUrl (validated against script properties if set)
+ * Returns default family contacts configuration.
+ */
+function getDefaultFamilyContacts() {
+  return [
+    { id: 'family-appa', name: 'Appa', phoneNumber: '+919876543210', active: true, relationship: 'Father' },
+    { id: 'family-amma', name: 'Amma', phoneNumber: '', active: true, relationship: 'Mother' },
+    { id: 'family-chinna-akka', name: 'Chinna Akka', phoneNumber: '', active: true, relationship: 'Sister' },
+    { id: 'family-periya-akka', name: 'Periya Akka', phoneNumber: '', active: true, relationship: 'Sister' }
+  ];
+}
+
+/**
+ * Resolves target spreadsheet safely:
+ * 1. Explicit spreadsheetId in payload/parameters
+ * 2. Script Properties SPREADSHEET_ID
+ * 3. Active bound Spreadsheet
  */
 function getTargetSpreadsheet(payload) {
-  var ss = null;
-  try {
-    ss = SpreadsheetApp.getActiveSpreadsheet();
-  } catch (e) {}
-
-  var scriptProp = null;
-  try {
-    scriptProp = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
-  } catch (e) {}
-
-  if (!ss && scriptProp) {
+  var explicitId = payload && (payload.spreadsheetId || payload.sheetId);
+  if (explicitId) {
     try {
-      ss = SpreadsheetApp.openById(scriptProp);
+      return SpreadsheetApp.openById(explicitId);
+    } catch (e) {
+      Logger.log("Failed to open explicit spreadsheet ID: " + e);
+    }
+  }
+
+  var scriptProps = PropertiesService.getScriptProperties();
+  var savedId = scriptProps.getProperty("SPREADSHEET_ID");
+  if (savedId) {
+    try {
+      return SpreadsheetApp.openById(savedId);
     } catch (e) {
       Logger.log("Failed to open spreadsheet by SPREADSHEET_ID property: " + e);
     }
   }
 
-  if (!ss && payload) {
-    if (payload.spreadsheetId) {
-      if (!scriptProp || scriptProp === payload.spreadsheetId) {
-        try {
-          ss = SpreadsheetApp.openById(payload.spreadsheetId);
-          if (!scriptProp) {
-            PropertiesService.getScriptProperties().setProperty("SPREADSHEET_ID", payload.spreadsheetId);
-          }
-        } catch (e) {}
+  try {
+    return SpreadsheetApp.getActiveSpreadsheet();
+  } catch (e) {
+    throw new Error("No active Google Spreadsheet found. Set SPREADSHEET_ID in Script Properties or pass spreadsheetId in the request.");
+  }
+}
+
+
+// ==============================================================================
+// MODULE: responseUtils.gs
+// ==============================================================================
+
+/**
+ * MSR Penny — Google Apps Script Response Utilities
+ * File: responseUtils.gs
+ */
+
+function jsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function successResponse(message, data) {
+  var payload = {
+    success: true,
+    message: message || "Operation completed successfully",
+    data: data || {},
+    timestamp: new Date().toISOString()
+  };
+  return jsonResponse(payload);
+}
+
+function errorResponse(errorMessage, statusCode) {
+  var payload = {
+    success: false,
+    error: errorMessage || "An unexpected error occurred",
+    statusCode: statusCode || 500,
+    timestamp: new Date().toISOString()
+  };
+  return jsonResponse(payload);
+}
+
+
+// ==============================================================================
+// MODULE: security.gs
+// ==============================================================================
+
+/**
+ * MSR Penny — Google Apps Script Security & Sanitization
+ * File: security.gs
+ */
+
+/**
+ * Sanitizes input string to prevent formula injection in Google Sheets.
+ * If a cell string starts with '=', '+', '-', or '@', prepends a single quote.
+ */
+function sanitizeCellInput(val) {
+  if (val === null || val === undefined) return "";
+  if (typeof val === "string") {
+    var trimmed = val.trim();
+    if (trimmed.length > 0) {
+      var firstChar = trimmed.charAt(0);
+      if (firstChar === "=" || firstChar === "+" || firstChar === "-" || firstChar === "@") {
+        return "'" + trimmed;
       }
-    } else if (payload.spreadsheetUrl) {
-      try {
-        ss = SpreadsheetApp.openByUrl(payload.spreadsheetUrl);
-      } catch (e) {}
+    }
+    return trimmed;
+  }
+  return val;
+}
+
+/**
+ * Validates request authentication token if a secret token is configured in Script Properties.
+ */
+function verifyAuthToken(requestToken) {
+  var configuredToken = PropertiesService.getScriptProperties().getProperty("SHORTCUT_SECRET_TOKEN");
+  if (!configuredToken) return true; // Token check optional if not configured in Script Properties
+  return requestToken === configuredToken;
+}
+
+/**
+ * Acquires script lock for concurrency safety.
+ */
+function acquireScriptLock(timeoutMs) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(timeoutMs || CONFIG.LOCK_TIMEOUT_WRITE_MS);
+  return lock;
+}
+
+/**
+ * Releases script lock safely.
+ */
+function releaseScriptLock(lock) {
+  if (lock) {
+    try {
+      lock.releaseLock();
+    } catch (e) {
+      Logger.log("Error releasing lock: " + e);
     }
   }
-
-  return ss;
 }
 
+
+// ==============================================================================
+// MODULE: validationService.gs
+// ==============================================================================
+
 /**
- * 🟢 INITIALIZE ALL SHEETS IMMEDIATELY!
- * Can be run from the Apps Script toolbar or the 'MSR Penny' menu inside Google Sheets.
+ * MSR Penny — Google Apps Script Validation Service
+ * File: validationService.gs
  */
-function setupInitialSheets() {
-  var ss = getTargetSpreadsheet();
-  if (!ss) {
-    throw new Error("No active Google Sheet linked! Please create this script via Google Sheets > Extensions > Apps Script.");
+
+function validateTransaction(tx) {
+  if (!tx || typeof tx !== 'object') {
+    return { valid: false, error: 'Transaction payload must be an object' };
   }
-  
-  // 1. Create or update Transactions tab
-  ensureTransactionsSheet(ss);
-  
-  // 2. Create Family Contacts tab
-  ensureFamilyContactsSheet(ss);
-  
-  // 3. Create Appa Ledger tab
-  getOrCreateSheet(ss, "Appa_Ledger", [
-    "Date", "Transaction ID", "Description", "Type", "Claimed Expense (₹)", "Repaid by Appa (₹)", "Running Balance (₹)", "Settled"
-  ]);
-  
-  // 4. Create Freelance Projects tab
-  getOrCreateSheet(ss, "Freelance_Projects", [
-    "Job ID", "Project Title", "Client Name", "Total Fee (₹)", "Paid Amount (₹)", "Pending (₹)", "Status", "Due Date", "Milestones"
-  ]);
-  
-  // 5. Create Savings & Goals tab
-  getOrCreateSheet(ss, "Savings_Goals", [
-    "Category", "Goal Title", "Current (₹)", "Target (₹)", "Progress %", "Target Date / Notes"
-  ]);
-  
-  // 6. Create Accounts & Transfers tabs
-  ensureAccountsSheet(ss);
-  ensureTransfersSheet(ss);
-
-  // 7. Create Summary Dashboard tab
-  updateSummaryDashboard(ss, [], { monthlyBudget: 4000 });
-  
-  // Remove default blank "Sheet1" if user created a fresh spreadsheet
-  var defaultSheet = ss.getSheetByName("Sheet1");
-  if (defaultSheet && ss.getSheets().length > 1) {
-    try {
-      ss.deleteSheet(defaultSheet);
-    } catch (e) {}
+  if (!tx.id || String(tx.id).trim() === '') {
+    return { valid: false, error: 'Transaction ID is required' };
   }
-  
-  Logger.log("✅ Success! All MSR Penny sheets created with emerald green headers.");
-}
-
-/**
- * Default family contacts list
- */
-function getDefaultFamilyContacts() {
-  return [
-    { id: "family-appa", name: "Appa", phoneNumber: "+919876543210", active: true },
-    { id: "family-amma", name: "Amma", phoneNumber: "", active: true },
-    { id: "family-chinna-akka", name: "Chinna Akka", phoneNumber: "", active: true },
-    { id: "family-periya-akka", name: "Periya Akka", phoneNumber: "", active: true }
-  ];
-}
-
-/**
- * Transactions Header Schema
- */
-function getTransactionsHeader() {
-  return [
-    "Transaction ID",
-    "Date",
-    "Description",
-    "Type",
-    "Amount (₹)",
-    "Category",
-    "Payment Method",
-    "Appa Reimbursable",
-    "Appa Settled",
-    "Notes",
-    "Timestamp",
-    "Family Contact ID",
-    "Family Contact Name",
-    "Settlement Status",
-    "Account ID",
-    "Account Name"
-  ];
-}
-
-/**
- * Ensure Transactions sheet exists and has all 14 columns without losing existing rows.
- */
-function ensureTransactionsSheet(ss) {
-  var header = getTransactionsHeader();
-  var sheet = ss.getSheetByName("Transactions");
-  if (!sheet) {
-    sheet = ss.insertSheet("Transactions");
-    sheet.appendRow(header);
-    formatHeaderRow(sheet, header.length);
-    return sheet;
+  if (!tx.title || String(tx.title).trim() === '') {
+    return { valid: false, error: 'Transaction title is required' };
   }
-
-  // If sheet exists, check header columns
-  var lastCol = sheet.getLastColumn();
-  if (lastCol === 0) {
-    sheet.appendRow(header);
-    formatHeaderRow(sheet, header.length);
-  } else if (lastCol < header.length) {
-    // Append the missing headers safely in row 1
-    var missingHeaders = header.slice(lastCol);
-    sheet.getRange(1, lastCol + 1, 1, missingHeaders.length).setValues([missingHeaders]);
-    formatHeaderRow(sheet, header.length);
+  var amt = Number(tx.amount);
+  if (isNaN(amt) || amt < 0) {
+    return { valid: false, error: 'Transaction amount must be a non-negative number' };
   }
-  return sheet;
+  if (!tx.date || !/^\d{4}-\d{2}-\d{2}/.test(String(tx.date))) {
+    return { valid: false, error: 'Transaction date must be in YYYY-MM-DD format' };
+  }
+  return { valid: true };
 }
 
-/**
- * Ensure Family_Contacts sheet exists with default members.
- */
-function ensureFamilyContactsSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return;
-
-  var header = ["Contact ID", "Contact Name", "WhatsApp Number", "Active", "Created At", "Updated At"];
-  var sheet = getOrCreateSheet(ss, "Family_Contacts", header);
-
-  if (sheet.getLastRow() <= 1) {
-    var defaults = getDefaultFamilyContacts();
-    var now = new Date().toISOString();
-    var rows = defaults.map(function(c) {
-      return [c.id, c.name, c.phoneNumber || "", c.active ? "YES" : "NO", now, now];
-    });
-    sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+function validateAccount(acc) {
+  if (!acc || typeof acc !== 'object') {
+    return { valid: false, error: 'Account payload must be an object' };
   }
-  return sheet;
+  if (!acc.id || String(acc.id).trim() === '') {
+    return { valid: false, error: 'Account ID is required' };
+  }
+  if (!acc.name || String(acc.name).trim() === '') {
+    return { valid: false, error: 'Account name is required' };
+  }
+  var bal = Number(acc.openingBalance);
+  if (isNaN(bal) || bal < 0) {
+    return { valid: false, error: 'Account opening balance must be a non-negative number' };
+  }
+  return { valid: true };
 }
 
+function validateTransfer(tr) {
+  if (!tr || typeof tr !== 'object') {
+    return { valid: false, error: 'Transfer payload must be an object' };
+  }
+  if (!tr.id || String(tr.id).trim() === '') {
+    return { valid: false, error: 'Transfer ID is required' };
+  }
+  var amt = Number(tr.amount);
+  if (isNaN(amt) || amt <= 0) {
+    return { valid: false, error: 'Transfer amount must be greater than zero' };
+  }
+  if (!tr.fromAccountId || !tr.toAccountId) {
+    return { valid: false, error: 'Source and destination accounts are required' };
+  }
+  if (tr.fromAccountId === tr.toAccountId) {
+    return { valid: false, error: 'Source and destination accounts cannot be the same' };
+  }
+  return { valid: true };
+}
+
+
+// ==============================================================================
+// MODULE: spreadsheetService.gs
+// ==============================================================================
+
 /**
- * Format headers with emerald green branding
+ * MSR Penny — Google Apps Script Spreadsheet Service
+ * File: spreadsheetService.gs
  */
+
 function formatHeaderRow(sheet, numCols) {
-  try {
-    var headerRange = sheet.getRange(1, 1, 1, numCols);
-    headerRange.setFontWeight("bold");
-    headerRange.setBackground("#059669"); // Emerald Green matching MSR Penny
-    headerRange.setFontColor("#FFFFFF");
-    sheet.setFrozenRows(1);
-  } catch (e) {}
+  var headerRange = sheet.getRange(1, 1, 1, numCols);
+  headerRange.setBackground(CONFIG.BRAND_COLOR);
+  headerRange.setFontColor(CONFIG.BRAND_TEXT_COLOR);
+  headerRange.setFontWeight("bold");
+  headerRange.setFontSize(10);
+  headerRange.setHorizontalAlignment("center");
+  sheet.setFrozenRows(1);
 }
 
 function getOrCreateSheet(ss, sheetName, headerArray) {
   var sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
     sheet = ss.insertSheet(sheetName);
-  }
-  if (sheet.getLastRow() === 0 && headerArray && headerArray.length > 0) {
     sheet.appendRow(headerArray);
     formatHeaderRow(sheet, headerArray.length);
+  } else {
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    if (lastRow === 0 || lastCol === 0) {
+      sheet.appendRow(headerArray);
+      formatHeaderRow(sheet, headerArray.length);
+    }
   }
   return sheet;
 }
 
-/**
- * 📥 Populates the sheet with initial sample / demo data
- */
-function seedSampleData() {
-  var ss = getTargetSpreadsheet();
-  if (!ss) {
-    throw new Error("No Google Sheet linked.");
-  }
-  setupInitialSheets();
-  
-  var sampleTransactions = [
-    { id: "tx-1", date: "2026-10-24", title: "Metro Recharge", type: "expense", amount: 100, category: "Travel", paymentMethod: "upi", isAppaReimbursable: false, isFamilyReimbursable: false, appaSettled: false, notes: "Station kiosk topup" },
-    { id: "tx-2", date: "2026-10-23", title: "Bus Pass (Appa)", type: "expense", amount: 40, category: "Travel", paymentMethod: "cash", isAppaReimbursable: true, isFamilyReimbursable: true, familyContactId: "family-appa", familyContactName: "Appa", appaSettled: false, settlementStatus: "pending", notes: "Claimed to Appa - Daily bus pass ticket" },
-    { id: "tx-3", date: "2026-10-22", title: "Poster Design Client", type: "income", amount: 800, category: "Freelance", paymentMethod: "upi", isAppaReimbursable: false, isFamilyReimbursable: false, appaSettled: false, notes: "Tech Fest poster first draft approval" },
-    { id: "tx-4", date: "2026-10-21", title: "Canteen Lunch", type: "expense", amount: 65, category: "Food", paymentMethod: "upi", isAppaReimbursable: false, isFamilyReimbursable: false, appaSettled: false, notes: "College campus meals" },
-    { id: "tx-5", date: "2026-10-20", title: "Printouts", type: "expense", amount: 45, category: "College", paymentMethod: "cash", isAppaReimbursable: false, isFamilyReimbursable: false, appaSettled: false, notes: "CAD assignment prints" },
-    { id: "tx-6", date: "2026-10-22", title: "College Bus Pass", type: "expense", amount: 100, category: "Travel", paymentMethod: "upi", isAppaReimbursable: true, isFamilyReimbursable: true, familyContactId: "family-appa", familyContactName: "Appa", appaSettled: false, settlementStatus: "pending", notes: "Monthly route 14 for Appa" },
-    { id: "tx-7", date: "2026-10-19", title: "Train Semester Ticket", type: "expense", amount: 60, category: "Travel", paymentMethod: "upi", isAppaReimbursable: true, isFamilyReimbursable: true, familyContactId: "family-appa", familyContactName: "Appa", appaSettled: false, settlementStatus: "pending", notes: "Suburban railway for family visit" },
-    { id: "tx-8", date: "2026-10-16", title: "Engineering Printouts", type: "expense", amount: 40, category: "College", paymentMethod: "cash", isAppaReimbursable: true, isFamilyReimbursable: true, familyContactId: "family-appa", familyContactName: "Appa", appaSettled: false, settlementStatus: "pending", notes: "CAD design sheets for home plan" },
-    { id: "tx-9", date: "2026-10-18", title: "Cash from Appa", type: "repayment", amount: 300, category: "Family", paymentMethod: "cash", isAppaReimbursable: false, isFamilyReimbursable: false, familyContactId: "family-appa", familyContactName: "Appa", appaSettled: true, settlementStatus: "settled", notes: "Handover morning settlement" },
-    { id: "tx-10", date: "2026-10-05", title: "UPI from Appa", type: "repayment", amount: 300, category: "Family", paymentMethod: "upi", isAppaReimbursable: false, isFamilyReimbursable: false, familyContactId: "family-appa", familyContactName: "Appa", appaSettled: true, settlementStatus: "settled", notes: "Direct bank credit" }
+function getTransactionsHeader() {
+  return [
+    "ID", "Date", "Title", "Amount (₹)", "Type", "Category",
+    "Payment Method", "Account ID", "Account Name",
+    "Is Appa Reimbursable", "Is Family Reimbursable", "Family Contact ID", "Family Contact Name",
+    "Appa Settled", "Settlement Status",
+    "Freelance Job ID", "Milestone Title", "Notes", "Created At"
   ];
+}
 
-  var sampleJobs = [
-    { id: "job-1", title: "College Fest Brand Poster", clientName: "Rohan Tech Fest", totalFee: 1600, paidAmount: 800, pendingAmount: 800, status: "in_progress", dueDate: "2026-10-28", milestones: [{ title: "Concept Sketches", amount: 800, paid: true }, { title: "Final Vector Delivery", amount: 800, paid: false }] }
+function ensureTransactionsSheet(ss) {
+  return getOrCreateSheet(ss, CONFIG.SHEETS.TRANSACTIONS, getTransactionsHeader());
+}
+
+function getAccountsHeader() {
+  return ["Account ID", "Account Name", "Type", "Opening Balance", "Opening Date", "Active", "Created At", "Updated At"];
+}
+
+function ensureAccountsSheet(ss) {
+  var sheet = getOrCreateSheet(ss, CONFIG.SHEETS.ACCOUNTS, getAccountsHeader());
+  if (sheet.getLastRow() <= 1) {
+    var defaults = getDefaultAccounts();
+    var nowIso = new Date().toISOString();
+    defaults.forEach(function(a) {
+      sheet.appendRow([a.id, a.name, a.type, a.openingBalance, a.openingDate, a.active ? "TRUE" : "FALSE", nowIso, nowIso]);
+    });
+  }
+  return sheet;
+}
+
+function getTransfersHeader() {
+  return ["Transfer ID", "Date", "Amount (₹)", "From Account ID", "From Account Name", "To Account ID", "To Account Name", "Fee (₹)", "Notes", "Created At"];
+}
+
+function ensureTransfersSheet(ss) {
+  return getOrCreateSheet(ss, CONFIG.SHEETS.TRANSFERS, getTransfersHeader());
+}
+
+function getFamilyContactsHeader() {
+  return ["Contact ID", "Name", "Relationship", "Phone Number", "Active", "Created At", "Updated At"];
+}
+
+function ensureFamilyContactsSheet(ss) {
+  var sheet = getOrCreateSheet(ss, CONFIG.SHEETS.FAMILY_CONTACTS, getFamilyContactsHeader());
+  if (sheet.getLastRow() <= 1) {
+    var defaults = getDefaultFamilyContacts();
+    var nowIso = new Date().toISOString();
+    defaults.forEach(function(c) {
+      sheet.appendRow([c.id, c.name, c.relationship, c.phoneNumber, c.active ? "TRUE" : "FALSE", nowIso, nowIso]);
+    });
+  }
+  return sheet;
+}
+
+function getSettledArchiveHeader() {
+  return [
+    "Archive ID", "Batch ID", "Archived At", "Original Transaction ID", "Date", "Title",
+    "Amount (₹)", "Type", "Category", "Payment Method", "Account ID", "Account Name",
+    "Family Contact ID", "Family Contact Name", "Settlement Status", "Notes", "Original Created At"
   ];
-
-  var sampleSavings = {
-    emergencyFund: { current: 900, target: 3000, title: "Emergency Fund", subtitle: "Target: 1 Month Living Buffer" },
-    goals: [{ title: "Drawing Tablet for Freelance", current: 4500, target: 12000, deadline: "2026-12-31" }]
-  };
-
-  syncAllData(ss, {
-    transactions: sampleTransactions,
-    familyContacts: getDefaultFamilyContacts(),
-    freelanceJobs: sampleJobs,
-    savings: sampleSavings,
-    settings: { monthlyBudget: 4000 }
-  });
-
-  Logger.log("✅ Sample data populated successfully!");
 }
 
-/**
- * 🗑️ Wipes all data rows but keeps emerald green headers clean!
- * Only runs on explicit user command.
- */
-function clearAllDataKeepHeaders() {
-  var ss = getTargetSpreadsheet();
-  if (!ss) return;
-
-  var sheetNames = ["Transactions", "Appa_Ledger", "Freelance_Projects", "Savings_Goals"];
-  sheetNames.forEach(function(name) {
-    var sheet = ss.getSheetByName(name);
-    if (sheet && sheet.getLastRow() > 1) {
-      sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(1, sheet.getLastColumn())).clearContent();
-    }
-  });
-
-  updateSummaryDashboard(ss, [], { monthlyBudget: 4000 });
-  Logger.log("✅ All demo data wiped clean! Headers preserved.");
+function ensureSettledArchiveSheet(ss) {
+  return getOrCreateSheet(ss, CONFIG.SHEETS.SETTLED_ARCHIVE, getSettledArchiveHeader());
 }
 
-function menuRecalculateAll() {
-  var ss = getTargetSpreadsheet();
-  if (ss) {
-    rebuildAppaLedger(ss);
-    updateSummaryDashboard(ss, [], {});
+function getReconciliationsHeader() {
+  return [
+    "Reconciliation ID", "Reconciled At", "Account ID", "Account Name", "Passbook Balance (₹)",
+    "Computed Balance (₹)", "Adjustment Amount (₹)", "Notes", "Created At"
+  ];
+}
+
+function ensureReconciliationsSheet(ss) {
+  return getOrCreateSheet(ss, CONFIG.SHEETS.RECONCILIATIONS, getReconciliationsHeader());
+}
+
+function getAuditLogHeader() {
+  return ["Log ID", "Timestamp", "Action", "Entity Type", "Entity ID", "Summary", "Status"];
+}
+
+function ensureAuditLogSheet(ss) {
+  return getOrCreateSheet(ss, CONFIG.SHEETS.AUDIT_LOG, getAuditLogHeader());
+}
+
+function logAuditEvent(ss, action, entityType, entityId, summary, status) {
+  try {
+    var sheet = ensureAuditLogSheet(ss);
+    var logId = "log-" + new Date().getTime();
+    sheet.appendRow([logId, new Date().toISOString(), action, entityType, entityId, summary, status || "SUCCESS"]);
+  } catch (err) {
+    Logger.log("Failed to log audit event: " + err);
   }
 }
 
-function showWebhookHelp() {
-  var html = HtmlService.createHtmlOutput(
-    '<div style="font-family:sans-serif;padding:16px;line-height:1.6;">' +
-    '<h3 style="color:#006948;margin-top:0;">🪙 MSR Penny Webhook Deployment</h3>' +
-    '<p>To connect your MSR Penny web app to this Google Sheet:</p>' +
-    '<ol>' +
-    '<li>Click <b>Deploy</b> (top right) &gt; <b>New deployment</b>.</li>' +
-    '<li>Select type: <b>Web app</b>.</li>' +
-    '<li>Execute as: <b>Me</b>.</li>' +
-    '<li>Who has access: <b style="color:#ba1a1a;">Anyone</b> (required).</li>' +
-    '<li>Click <b>Deploy</b> and copy the Web app URL ending in <code>/exec</code>.</li>' +
-    '<li>Open MSR Penny and paste it in the Sync modal.</li>' +
-    '</ol>' +
-    '</div>'
-  ).setWidth(450).setHeight(320);
-  SpreadsheetApp.getUi().showModalDialog(html, 'MSR Penny Webhook Setup');
+function formatDateForSheet(dateStr) {
+  if (!dateStr) return "";
+  try {
+    var d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return Utilities.formatDate(d, CONFIG.TIMEZONE, "yyyy-MM-dd");
+  } catch (e) {
+    return dateStr;
+  }
 }
 
-/**
- * Reads family contacts from Family_Contacts sheet
- */
-function readFamilyContactsFromSheet(ss) {
-  var contactsSheet = ss.getSheetByName("Family_Contacts");
-  if (!contactsSheet || contactsSheet.getLastRow() <= 1) {
-    return getDefaultFamilyContacts();
-  }
+function formatCurrencyColumn(sheet, colIndex, startRow, numRows) {
+  if (numRows <= 0) return;
+  sheet.getRange(startRow, colIndex, numRows, 1).setNumberFormat("₹#,##0.00");
+}
 
-  var data = contactsSheet.getDataRange().getValues();
-  var contacts = [];
-  for (var i = 1; i < data.length; i++) {
+
+// ==============================================================================
+// MODULE: transactionService.gs
+// ==============================================================================
+
+/**
+ * MSR Penny — Google Apps Script Transaction Service
+ * File: transactionService.gs
+ */
+
+function readTransactionsFromSheet(ss) {
+  var sheet = ensureTransactionsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
+
+  var data = sheet.getRange(2, 1, lastRow - 1, 19).getValues();
+  var transactions = [];
+
+  for (var i = 0; i < data.length; i++) {
     var row = data[i];
-    if (row[0]) {
-      contacts.push({
-        id: String(row[0]),
-        name: String(row[1] || row[0]),
-        phoneNumber: String(row[2] || ""),
-        active: String(row[3]).toUpperCase() !== "NO",
-        createdAt: row[4] ? String(row[4]) : new Date().toISOString(),
-        updatedAt: row[5] ? String(row[5]) : new Date().toISOString()
-      });
+    var id = String(row[0]).trim();
+    if (!id) continue;
+
+    var dateVal = row[1];
+    var formattedDate = "";
+    if (dateVal instanceof Date) {
+      formattedDate = Utilities.formatDate(dateVal, CONFIG.TIMEZONE, "yyyy-MM-dd");
+    } else {
+      formattedDate = formatDateForSheet(String(dateVal));
+    }
+
+    var tx = {
+      id: id,
+      date: formattedDate,
+      title: String(row[2]),
+      amount: Number(row[3]) || 0,
+      type: String(row[4]).toLowerCase() || "expense",
+      category: String(row[5]) || "Other",
+      paymentMethod: String(row[6]).toLowerCase() || "upi",
+      accountId: String(row[7] || ""),
+      accountName: String(row[8] || ""),
+      isAppaReimbursable: String(row[9]).toUpperCase() === "TRUE",
+      isFamilyReimbursable: String(row[10]).toUpperCase() === "TRUE",
+      familyContactId: String(row[11] || ""),
+      familyContactName: String(row[12] || ""),
+      appaSettled: String(row[13]).toUpperCase() === "TRUE",
+      settlementStatus: String(row[14] || "pending"),
+      freelanceJobId: String(row[15] || ""),
+      milestoneTitle: String(row[16] || ""),
+      notes: String(row[17] || ""),
+      createdAt: row[18] ? (row[18] instanceof Date ? row[18].toISOString() : String(row[18])) : new Date().toISOString()
+    };
+    transactions.push(tx);
+  }
+
+  transactions.sort(function(a, b) {
+    return new Date(b.date).getTime() - new Date(a.date).getTime();
+  });
+
+  return transactions;
+}
+
+function saveSingleTransaction(ss, tx) {
+  var validation = validateTransaction(tx);
+  if (!validation.valid) {
+    return errorResponse(validation.error, 400);
+  }
+
+  var sheet = ensureTransactionsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  var targetRow = -1;
+
+  if (lastRow > 1) {
+    var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === tx.id) {
+        targetRow = i + 2;
+        break;
+      }
     }
   }
+
+  var rowData = [
+    sanitizeCellInput(tx.id),
+    formatDateForSheet(tx.date),
+    sanitizeCellInput(tx.title),
+    Number(tx.amount) || 0,
+    sanitizeCellInput(tx.type || "expense"),
+    sanitizeCellInput(tx.category || "Other"),
+    sanitizeCellInput(tx.paymentMethod || "upi"),
+    sanitizeCellInput(tx.accountId || ""),
+    sanitizeCellInput(tx.accountName || ""),
+    tx.isAppaReimbursable ? "TRUE" : "FALSE",
+    tx.isFamilyReimbursable ? "TRUE" : "FALSE",
+    sanitizeCellInput(tx.familyContactId || ""),
+    sanitizeCellInput(tx.familyContactName || ""),
+    tx.appaSettled ? "TRUE" : "FALSE",
+    sanitizeCellInput(tx.settlementStatus || "pending"),
+    sanitizeCellInput(tx.freelanceJobId || ""),
+    sanitizeCellInput(tx.milestoneTitle || ""),
+    sanitizeCellInput(tx.notes || ""),
+    tx.createdAt ? formatDateForSheet(tx.createdAt) : new Date().toISOString()
+  ];
+
+  if (targetRow > 0) {
+    sheet.getRange(targetRow, 1, 1, rowData.length).setValues([rowData]);
+  } else {
+    sheet.appendRow(rowData);
+  }
+
+  return successResponse("Transaction saved successfully", { transaction: tx });
+}
+
+function deleteSingleTransaction(ss, txId) {
+  if (!txId) return errorResponse("Transaction ID is required", 400);
+
+  var sheet = ensureTransactionsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return errorResponse("Transaction not found", 404);
+
+  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]).trim() === txId) {
+      sheet.deleteRow(i + 2);
+      return successResponse("Transaction deleted successfully", { id: txId });
+    }
+  }
+  return errorResponse("Transaction not found", 404);
+}
+
+
+// ==============================================================================
+// MODULE: settlementService.gs
+// ==============================================================================
+
+/**
+ * MSR Penny — Google Apps Script Settlement Service
+ * File: settlementService.gs
+ */
+
+function readFamilyContactsFromSheet(ss) {
+  var sheet = ensureFamilyContactsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return getDefaultFamilyContacts();
+
+  var data = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  var contacts = [];
+
+  for (var i = 0; i < data.length; i++) {
+    var row = data[i];
+    var id = String(row[0]).trim();
+    if (!id) continue;
+
+    contacts.push({
+      id: id,
+      name: String(row[1] || ""),
+      relationship: String(row[2] || ""),
+      phoneNumber: String(row[3] || ""),
+      active: String(row[4]).toUpperCase() === "TRUE",
+      createdAt: row[5] ? String(row[5]) : new Date().toISOString(),
+      updatedAt: row[6] ? String(row[6]) : new Date().toISOString()
+    });
+  }
+
   return contacts.length > 0 ? contacts : getDefaultFamilyContacts();
 }
 
-/**
- * GET Handler
- * Used for live health check, full database queries, transactions, and balances.
- */
-function doGet(e) {
-  try {
-    var ss = getTargetSpreadsheet();
-    if (!ss) {
-      return jsonResponse({
-        success: false,
-        status: "error",
-        app: "MSR Penny Backend",
-        message: "Unable to access the configured spreadsheet. Please ensure the Apps Script is container-bound or set SPREADSHEET_ID in Script Properties.",
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'status';
-    
-    // 1. Get Transactions
-    if (action === 'get_transactions') {
-      var txSheet = ensureTransactionsSheet(ss);
-      var data = txSheet.getDataRange().getValues();
-      var transactions = [];
-      if (data.length > 1) {
-        for (var i = 1; i < data.length; i++) {
-          var row = data[i];
-          if (!row[0]) continue; // Skip blank rows
-          
-          var isAppaReimbursable = String(row[7]).toUpperCase() === 'YES';
-          var appaSettled = String(row[8]).toUpperCase() === 'YES';
-          var familyContactId = row[11] ? String(row[11]) : (isAppaReimbursable ? 'family-appa' : '');
-          var familyContactName = row[12] ? String(row[12]) : (isAppaReimbursable ? 'Appa' : '');
-          var settlementStatus = row[13] ? String(row[13]).toLowerCase() : (appaSettled ? 'settled' : 'pending');
-
-          var txType = String(row[3] || 'expense').toLowerCase();
-          // Normalize legacy repayments
-          if (txType === 'repayment' && !familyContactId) {
-            var desc = String(row[2] || '').toLowerCase();
-            var nts = String(row[9] || '').toLowerCase();
-            if (desc.includes('appa') || nts.includes('appa') || appaSettled) {
-              familyContactId = 'family-appa';
-              familyContactName = 'Appa';
-            }
-          }
-
-          transactions.push({
-            id: String(row[0]),
-            date: formatDateForSheet(row[1]),
-            title: String(row[2] || ''),
-            type: txType,
-            amount: Number(row[4]) || 0,
-            category: String(row[5] || 'Other'),
-            paymentMethod: String(row[6] || 'upi').toLowerCase(),
-            isAppaReimbursable: isAppaReimbursable,
-            appaSettled: appaSettled,
-            notes: String(row[9] || ''),
-            createdAt: row[10] ? String(row[10]) : new Date().toISOString(),
-            isFamilyReimbursable: Boolean(familyContactId && isAppaReimbursable),
-            familyContactId: familyContactId,
-            familyContactName: familyContactName,
-            settlementStatus: settlementStatus,
-            accountId: row[14] ? String(row[14]) : (String(row[6]).toLowerCase() === "cash" ? "acc-cash" : "acc-sbi"),
-            accountName: row[15] ? String(row[15]) : ((row[14] === "acc-cash" || String(row[6]).toLowerCase() === "cash") ? "Cash" : (row[14] === "acc-iob" ? "IOB (Second)" : "SBI (Main)"))
-          });
-        }
-      }
-      return jsonResponse({
-        success: true,
-        count: transactions.length,
-        transactions: transactions
-      });
-    }
-
-    // 2. Get Contacts
-    if (action === 'get_contacts' || action === 'get_family_contacts') {
-      var contacts = readFamilyContactsFromSheet(ss);
-      var accounts = readAccountsFromSheet(ss);
-      var transfers = readTransfersFromSheet(ss);
-      return jsonResponse({
-        success: true,
-        count: contacts.length,
-        contacts: contacts
-      });
-    }
-
-    // 2b. Get Accounts
-    if (action === 'get_accounts') {
-      var accounts = readAccountsFromSheet(ss);
-      return jsonResponse({ success: true, count: accounts.length, accounts: accounts });
-    }
-
-    // 2b-2. Get Accounts Backups
-    if (action === 'get_accounts_backups') {
-      var bSheets = [];
-      var allSheets = ss.getSheets();
-      for (var si = 0; si < allSheets.length; si++) {
-        var sName = allSheets[si].getName();
-        if (sName.indexOf("Accounts_backup_") === 0) {
-          bSheets.push(sName);
-        }
-      }
-      bSheets.sort().reverse();
-      return jsonResponse({ success: true, backups: bSheets });
-    }
-
-    // 2c. Get Transfers
-    if (action === 'get_transfers') {
-      var transfers = readTransfersFromSheet(ss);
-      return jsonResponse({ success: true, count: transfers.length, transfers: transfers });
-    }
-
-    // 3. Get Balances
-    if (action === 'get_balance' || action === 'get_appa_balance' || action === 'get_family_balance') {
-      var balanceData = calculateFamilyBalancesFromSheet(ss);
-      return jsonResponse({
-        success: true,
-        appaBalance: balanceData.appaBalance,
-        totalFamilyOutstanding: balanceData.totalFamilyOutstanding,
-        contacts: balanceData.balancesByContact,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // 4. Get All Data (Comprehensive reliable initial fetch)
-    if (action === 'get_all_data') {
-      var txSheet = ensureTransactionsSheet(ss);
-      var data = txSheet.getDataRange().getValues();
-      var transactions = [];
-      if (data.length > 1) {
-        for (var i = 1; i < data.length; i++) {
-          var row = data[i];
-          if (!row[0]) continue;
-          var isAppa = String(row[7]).toUpperCase() === 'YES';
-          var settled = String(row[8]).toUpperCase() === 'YES';
-          var fId = row[11] ? String(row[11]) : (isAppa ? 'family-appa' : '');
-          var fName = row[12] ? String(row[12]) : (isAppa ? 'Appa' : '');
-          var sStatus = row[13] ? String(row[13]).toLowerCase() : (settled ? 'settled' : 'pending');
-
-          var tType = String(row[3] || 'expense').toLowerCase();
-          if (tType === 'repayment' && !fId) {
-            var d = String(row[2] || '').toLowerCase();
-            if (d.includes('appa') || settled) {
-              fId = 'family-appa';
-              fName = 'Appa';
-            }
-          }
-
-          transactions.push({
-            id: String(row[0]),
-            date: formatDateForSheet(row[1]),
-            title: String(row[2] || ''),
-            type: tType,
-            amount: Number(row[4]) || 0,
-            category: String(row[5] || 'Other'),
-            paymentMethod: String(row[6] || 'upi').toLowerCase(),
-            isAppaReimbursable: isAppa,
-            appaSettled: settled,
-            notes: String(row[9] || ''),
-            createdAt: row[10] ? String(row[10]) : new Date().toISOString(),
-            isFamilyReimbursable: Boolean(fId || isAppa),
-            familyContactId: fId,
-            familyContactName: fName,
-            settlementStatus: sStatus,
-            accountId: row[14] ? String(row[14]) : (String(row[6]).toLowerCase() === "cash" ? "acc-cash" : "acc-sbi"),
-            accountName: row[15] ? String(row[15]) : ((row[14] === "acc-cash" || String(row[6]).toLowerCase() === "cash") ? "Cash" : (row[14] === "acc-iob" ? "IOB (Second)" : "SBI (Main)"))
-          });
-        }
-      }
-
-      var contacts = readFamilyContactsFromSheet(ss);
-      var balanceInfo = calculateFamilyBalancesFromSheet(ss);
-      var freelanceJobs = readFreelanceProjectsFromSheet(ss);
-      var accounts = readAccountsFromSheet(ss);
-      var transfers = readTransfersFromSheet(ss);
-
-      return jsonResponse({
-        success: true,
-        transactions: transactions,
-        familyContacts: contacts,
-        accounts: accounts,
-        transfers: transfers,
-        freelanceJobs: freelanceJobs,
-        appaBalance: balanceInfo.appaBalance,
-        totalFamilyOutstanding: balanceInfo.totalFamilyOutstanding,
-        balancesByContact: balanceInfo.balancesByContact,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Settled Archive action
-    if (action === 'get_settled_archive') {
-      var archiveItems = readSettledArchiveFromSheet(ss);
-      return jsonResponse({ success: true, archiveItems: archiveItems, count: archiveItems.length });
-    }
-
-    // Reconciliations action
-    if (action === 'get_reconciliations') {
-      var reconciliations = readReconciliationsFromSheet(ss);
-      return jsonResponse({ success: true, reconciliations: reconciliations, count: reconciliations.length });
-    }
-
-    // Data Health Check action
-    if (action === 'check_data_health') {
-      var healthReport = runDataHealthCheck(ss);
-      return jsonResponse({ success: true, healthReport: healthReport });
-    }
-
-    // Push Subscriptions action
-    if (action === 'get_push_subscriptions') {
-      var subs = readPushSubscriptionsFromSheet(ss);
-      return jsonResponse({ success: true, subscriptions: subs, count: subs.length });
-    }
-
-    // 2. Delete Transaction action (GET fallback)
-    if (action === 'delete_transaction') {
-      var txId = (e && e.parameter) ? (e.parameter.transactionId || e.parameter.id) : null;
-      var deleteResult = deleteSingleTransaction(ss, txId);
-      return jsonResponse(deleteResult);
-    }
-
-    // Default status info
-    var currentBalances = calculateFamilyBalancesFromSheet(ss);
-    return jsonResponse({
-      status: "online",
-      app: "MSR Penny Backend",
-      version: "2.0.0",
-      activeSpreadsheet: ss.getName(),
-      sheetUrl: ss.getUrl(),
-      appaBalance: currentBalances.appaBalance,
-      totalFamilyOutstanding: currentBalances.totalFamilyOutstanding,
-      timestamp: new Date().toISOString()
-    });
-  } catch (err) {
-    return jsonResponse({
-      success: false,
-      error: err.toString()
-    });
-  }
-}
-
-/**
- * POST Handler
- * Receives synchronization data or single transactions from MSR Penny.
- */
-function doPost(e) {
-  var lock = LockService.getScriptLock();
-  var hasLock = false;
-  try {
-    hasLock = lock.tryLock(15000);
-  } catch (lockErr) {}
-
-  if (!hasLock) {
-    return jsonResponse({
-      success: false,
-      error: "Database lock timeout: another update is in progress. Please retry in a moment."
-    });
-  }
-
-  try {
-    if (!e || !e.postData || !e.postData.contents) {
-      return jsonResponse({ success: false, error: "Empty request body received." });
-    }
-
-    var payload;
-    try {
-      payload = JSON.parse(e.postData.contents);
-    } catch (parseError) {
-      return jsonResponse({ success: false, error: "Invalid JSON format: " + parseError.toString() });
-    }
-
-    var ss = getTargetSpreadsheet(payload);
-    if (!ss) {
-      return jsonResponse({
-        success: false,
-        error: "Unable to access configured Google Sheet. Please check your spreadsheet ID or link the script via Google Sheets > Extensions > Apps Script."
-      });
-    }
-
-    var action = payload.action || 'sync_all';
-
-    // 1. Wipe / Clear Demo Data action (Explicit only)
-    if (action === 'clear_data') {
-      clearAllDataKeepHeaders();
-      return jsonResponse({
-        success: true,
-        message: "Google Sheet demo data wiped clean! Headers preserved.",
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Archive Settled Items action
-    if (action === 'archive_settled_items') {
-      var archRes = archiveSettledTransactions(ss, payload.batchId, payload.contactId, payload.transactionIds);
-      return jsonResponse(archRes);
-    }
-
-    // Restore Archived Items action
-    if (action === 'restore_archived_items') {
-      var restRes = restoreArchivedTransactions(ss, payload.batchId);
-      return jsonResponse(restRes);
-    }
-
-    // Save Reconciliation action
-    if (action === 'save_reconciliation') {
-      var reconRes = saveReconciliationAdjustment(ss, payload.reconciliation);
-      return jsonResponse(reconRes);
-    }
-
-    // Manual Backup action
-    if (action === 'create_backup') {
-      var backupName = createBackupTransactionsSheet(ss);
-      return jsonResponse({ success: true, backupName: backupName, message: "Backup copy created: " + backupName });
-    }
-
-    // Push Subscription Save action
-    if (action === 'save_push_subscription') {
-      var saveSubRes = savePushSubscriptionToSheet(ss, payload.subscription, payload.userAgent);
-      return jsonResponse(saveSubRes);
-    }
-
-    // 2. Single Transaction Add / Upsert (Idempotent with duplicate prevention)
-    if (action === 'add_transaction' || (payload.transaction && !payload.transactions)) {
-      var tx = payload.transaction || payload;
-      var result = saveSingleTransaction(ss, tx);
-      return jsonResponse(result);
-    }
-
-    // 3. Full State Sync with Safe Merge
-    if (action === 'sync_all' || Array.isArray(payload.transactions)) {
-      var syncResult = syncAllData(ss, payload);
-      return jsonResponse(syncResult);
-    }
-
-    // 3b. Save Accounts action (with lock, backup, audit log & read-back)
-    if (action === 'save_accounts' && Array.isArray(payload.accounts)) {
-      var resAcc = saveAccountsWithAuditAndBackup(ss, payload.accounts);
-      return jsonResponse(resAcc);
-    }
-
-    // 3b-2. Restore Accounts Backup action
-    if (action === 'restore_accounts_backup') {
-      var restoreRes = restoreAccountsBackup(ss, payload.backupName);
-      return jsonResponse(restoreRes);
-    }
-
-    // 3c. Add Transfer action
-    if (action === 'add_transfer' || payload.transfer) {
-      var trResult = saveSingleTransfer(ss, payload.transfer || payload);
-      return jsonResponse(trResult);
-    }
-
-    // 3d. Delete Transfer action
-    if (action === 'delete_transfer') {
-      var delTrResult = deleteSingleTransfer(ss, payload.transferId || payload.id);
-      return jsonResponse(delTrResult);
-    }
-
-    // 3e. Backup Transactions Sheet action
-    if (action === 'backup_sheet') {
-      var bName = createBackupTransactionsSheet(ss);
-      return jsonResponse({ success: true, backupSheet: bName, message: 'Backup created: ' + bName });
-    }
-
-    // 4. Save Contacts action
-    if (action === 'save_contacts' && Array.isArray(payload.contacts)) {
-      syncFamilyContactsSheet(ss, payload.contacts);
-      return jsonResponse({
-        success: true,
-        message: "Family contacts saved successfully.",
-        contacts: payload.contacts
-      });
-    }
-
-    // 5. Delete Transaction action
-    if (action === 'delete_transaction') {
-      var txId = payload.transactionId || payload.id;
-      var deleteResult = deleteSingleTransaction(ss, txId);
-      return jsonResponse(deleteResult);
-    }
-
-    return jsonResponse({ success: false, error: "Unknown action: " + action });
-  } catch (err) {
-    return jsonResponse({ success: false, error: err.toString() });
-  } finally {
-    try {
-      lock.releaseLock();
-    } catch (e) {}
-  }
-}
-
-/**
- * Save or update a single transaction with backend duplicate protection and balance return.
- */
-function saveSingleTransaction(ss, tx) {
-  if (!tx || !tx.amount || Number(tx.amount) <= 0) {
-    return { success: false, error: "Invalid transaction: positive amount required." };
-  }
-
-  var prevBalanceData = calculateFamilyBalancesFromSheet(ss);
-  
-  var txSheet = ensureTransactionsSheet(ss);
-  var rawId = tx.id || tx.transactionId || ('tx-sc-' + Date.now());
-  var txId = String(rawId).trim();
-  
-  var isAppa = Boolean(tx.isAppaReimbursable);
-  var isFamily = Boolean(tx.isFamilyReimbursable || tx.familyContactId);
-  var contactId = tx.familyContactId || (isAppa ? 'family-appa' : '');
-  var contactName = tx.familyContactName || (contactId === 'family-appa' ? 'Appa' : '');
-  var isRepayment = tx.type === 'repayment';
-
-  // If claimed to Appa, ensure Appa Reimbursable flag is set
-  if (contactId === 'family-appa' && !isRepayment) {
-    isAppa = true;
-  }
-
-  var accountId = tx.accountId || ((tx.paymentMethod || "upi").toLowerCase() === "cash" ? "acc-cash" : "acc-sbi");
-  var accountName = tx.accountName || (accountId === "acc-cash" ? "Cash" : (accountId === "acc-iob" ? "IOB (Second)" : "SBI (Main)"));
-
-  var rowValues = [
-    txId,
-    formatDateForSheet(tx.date),
-    tx.title || (isRepayment ? ("Received from " + (contactName || "Family")) : "Expense"),
-    tx.type || "expense",
-    Number(tx.amount) || 0,
-    tx.category || (isRepayment ? "Family" : "General"),
-    (tx.paymentMethod || "upi").toLowerCase(),
-    isAppa ? "YES" : "NO",
-    tx.appaSettled ? "YES" : "NO",
-    tx.notes || "",
-    tx.createdAt || new Date().toISOString(),
-    contactId,
-    contactName,
-    tx.settlementStatus || (tx.appaSettled ? "settled" : "pending"),
-    accountId,
-    accountName
-  ];
-
-  // Check for existing ID (Duplicate Protection / Idempotency)
-  var data = txSheet.getDataRange().getValues();
-  var existingRowIndex = -1;
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === txId) {
-      existingRowIndex = i + 1; // 1-indexed for SpreadsheetApp
-      break;
-    }
-  }
-
-  if (existingRowIndex > 0) {
-    txSheet.getRange(existingRowIndex, 1, 1, rowValues.length).setValues([rowValues]);
-  } else {
-    txSheet.appendRow(rowValues);
-    formatCurrencyColumn(txSheet, 5, txSheet.getLastRow(), 1);
-  }
-
-  // Refresh Appa Ledger & Summary
-  rebuildAppaLedger(ss);
-  var updatedBalanceData = calculateFamilyBalancesFromSheet(ss);
-
-  var previousContactBal = (contactId && prevBalanceData.balancesByContact[contactId])
-    ? prevBalanceData.balancesByContact[contactId].outstandingBalance
-    : prevBalanceData.appaBalance;
-
-  var updatedContactBal = (contactId && updatedBalanceData.balancesByContact[contactId])
-    ? updatedBalanceData.balancesByContact[contactId].outstandingBalance
-    : updatedBalanceData.appaBalance;
-
-  return {
-    success: true,
-    transactionId: txId,
-    id: txId,
-    previousAppaBalance: prevBalanceData.appaBalance,
-    updatedAppaBalance: updatedBalanceData.appaBalance,
-    previousBalance: previousContactBal,
-    updatedBalance: updatedContactBal,
-    contactId: contactId,
-    contactName: contactName,
-    message: existingRowIndex > 0 ? "Transaction updated" : "Transaction saved successfully",
-    timestamp: new Date().toISOString()
-  };
-}
-
-/**
- * Safely deletes a single transaction by ID from the Transactions sheet.
- * Never clears the sheet. Rebuilds ledgers and returns updated balances.
- */
-function deleteSingleTransaction(ss, txId) {
-  if (!txId) {
-    return { success: false, error: "Transaction ID is required for deletion." };
-  }
-
-  var txSheet = ensureTransactionsSheet(ss);
-  var data = txSheet.getDataRange().getValues();
-  if (data.length <= 1) {
-    return { success: false, notFound: true, error: "Transaction not found: database is empty." };
-  }
-
-  var targetRowIndex = -1;
-  var deletedRowData = null;
-
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === String(txId).trim()) {
-      targetRowIndex = i + 1; // 1-indexed for SpreadsheetApp sheet methods
-      deletedRowData = data[i];
-      break;
-    }
-  }
-
-  if (targetRowIndex === -1) {
-    return {
-      success: false,
-      notFound: true,
-      error: "Transaction not found with ID: " + txId,
-      transactionId: txId
-    };
-  }
-
-  // Delete only the single matching row
-  txSheet.deleteRow(targetRowIndex);
-
-  // Rebuild derived ledgers & summary
-  try {
-    rebuildAppaLedger(ss);
-  } catch (e) {}
-
-  try {
-    updateSummaryDashboard(ss, [], {});
-  } catch (e) {}
-
-  var balanceInfo = calculateFamilyBalancesFromSheet(ss);
-
-  var isAppa = String(deletedRowData[7]).toUpperCase() === 'YES';
-  var contactId = deletedRowData[11] ? String(deletedRowData[11]) : (isAppa ? 'family-appa' : '');
-  var updatedContactBal = (contactId && balanceInfo.balancesByContact[contactId])
-    ? balanceInfo.balancesByContact[contactId].outstandingBalance
-    : balanceInfo.appaBalance;
-
-  return {
-    success: true,
-    message: "Transaction deleted successfully from Google Sheets.",
-    transactionId: txId,
-    deletedTitle: String(deletedRowData[2] || ''),
-    deletedAmount: Number(deletedRowData[4]) || 0,
-    deletedContactId: contactId,
-    appaBalance: balanceInfo.appaBalance,
-    totalFamilyOutstanding: balanceInfo.totalFamilyOutstanding,
-    balancesByContact: balanceInfo.balancesByContact,
-    updatedBalance: updatedContactBal,
-    timestamp: new Date().toISOString()
-  };
-}
-
-/**
- * Sync entire application state into organized sheets with merge protection.
- */
-function syncAllData(ss, payload) {
-  var txList = payload.transactions;
-  var contactsList = payload.familyContacts || [];
-  var jobsList = payload.freelanceJobs || [];
-  var savingsData = payload.savings || {};
-  var settingsData = payload.settings || {};
-
-  // 1. Transactions Sheet (Merge Protection)
-  var txSheet = ensureTransactionsSheet(ss);
-  var existingData = txSheet.getDataRange().getValues();
-  
-  // Build map of existing transactions
-  var txMap = {};
-  var existingIdsOrder = [];
-  if (existingData.length > 1) {
-    for (var i = 1; i < existingData.length; i++) {
-      var row = existingData[i];
-      var id = String(row[0]);
-      if (!id) continue;
-      txMap[id] = row;
-      existingIdsOrder.push(id);
-    }
-  }
-
-  // Merge incoming transactions
-  if (Array.isArray(txList) && txList.length > 0) {
-    txList.forEach(function(t) {
-      if (!t || !t.id) return;
-      var isAppa = Boolean(t.isAppaReimbursable);
-      var contactId = t.familyContactId || (isAppa ? 'family-appa' : '');
-      var contactName = t.familyContactName || (contactId === 'family-appa' ? 'Appa' : '');
-      if (contactId === 'family-appa' && t.type !== 'repayment') {
-        isAppa = true;
-      }
-
-      var accId = t.accountId || ((t.paymentMethod || "upi").toLowerCase() === "cash" ? "acc-cash" : "acc-sbi");
-      var accName = t.accountName || (accId === "acc-cash" ? "Cash" : (accId === "acc-iob" ? "IOB (Second)" : "SBI (Main)"));
-
-      var rowValues = [
-        t.id,
-        formatDateForSheet(t.date),
-        t.title || "",
-        t.type || "expense",
-        Number(t.amount) || 0,
-        t.category || "General",
-        (t.paymentMethod || "upi").toLowerCase(),
-        isAppa ? "YES" : "NO",
-        t.appaSettled ? "YES" : "NO",
-        t.notes || "",
-        t.createdAt || new Date().toISOString(),
-        contactId,
-        contactName,
-        t.settlementStatus || (t.appaSettled ? "settled" : "pending"),
-        accId,
-        accName
-      ];
-
-      // If transaction exists in sheet, update it.
-      // If it is NOT in sheet, ONLY insert if marked as isPendingSync: true
-      // or if allowNewTransactions is explicitly set.
-      // This prevents deleted records from being resurrected!
-      if (txMap[t.id]) {
-        txMap[t.id] = rowValues;
-      } else if (t.isPendingSync || payload.allowNewTransactions) {
-        existingIdsOrder.push(t.id);
-        txMap[t.id] = rowValues;
-      }
-    });
-
-    // Write merged list
-    if (existingIdsOrder.length > 0) {
-      var mergedRows = existingIdsOrder.map(function(id) {
-        return txMap[id];
-      });
-
-      if (txSheet.getLastRow() > 1) {
-        txSheet.getRange(2, 1, txSheet.getLastRow() - 1, Math.max(1, txSheet.getLastColumn())).clearContent();
-      }
-      txSheet.getRange(2, 1, mergedRows.length, mergedRows[0].length).setValues(mergedRows);
-      formatCurrencyColumn(txSheet, 5, 2, mergedRows.length);
-    }
-  }
-
-  // 1b. Accounts & Transfers Sheet
-  if (payload.accounts && payload.accounts.length > 0) {
-    syncAccountsSheet(ss, payload.accounts);
-  } else {
-    ensureAccountsSheet(ss);
-  }
-  if (payload.transfers && payload.transfers.length > 0) {
-    ensureTransfersSheet(ss);
-  }
-
-  // 2. Family Contacts Sheet
-  if (contactsList.length > 0) {
-    syncFamilyContactsSheet(ss, contactsList);
-  } else {
-    ensureFamilyContactsSheet(ss);
-  }
-
-  // 3. Appa Ledger Sheet
-  rebuildAppaLedger(ss);
-
-  // 4. Freelance Projects Sheet
-  if (jobsList && jobsList.length > 0) {
-    syncFreelanceSheet(ss, jobsList);
-  }
-
-  // 5. Savings & Goals Sheet
-  if (savingsData) {
-    syncSavingsSheet(ss, savingsData);
-  }
-
-  // 6. Dashboard Summary Sheet
-  updateSummaryDashboard(ss, txList || [], settingsData);
-
-  var balanceInfo = calculateFamilyBalancesFromSheet(ss);
-
-  return {
-    success: true,
-    message: "MSR Penny successfully synced with Google Sheets",
-    syncedTransactions: existingIdsOrder.length,
-    appaBalance: balanceInfo.appaBalance,
-    totalFamilyOutstanding: balanceInfo.totalFamilyOutstanding,
-    balancesByContact: balanceInfo.balancesByContact,
-    timestamp: new Date().toISOString()
-  };
-}
-
-/**
- * Updates Family_Contacts sheet
- */
 function syncFamilyContactsSheet(ss, contacts) {
-  var sheet = getOrCreateSheet(ss, "Family_Contacts", [
-    "Contact ID", "Contact Name", "WhatsApp Number", "Active", "Created At", "Updated At"
-  ]);
+  if (!contacts || !Array.isArray(contacts) || contacts.length === 0) {
+    return;
+  }
+  var sheet = ensureFamilyContactsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, 7).clearContent();
+  }
 
-  if (!contacts || contacts.length === 0) return;
-
-  var now = new Date().toISOString();
-  var rows = contacts.map(function(c) {
-    return [
-      c.id,
-      c.name,
-      c.phoneNumber || "",
-      c.active !== false ? "YES" : "NO",
-      c.createdAt || now,
-      now
-    ];
+  var rows = [];
+  var nowIso = new Date().toISOString();
+  contacts.forEach(function(c) {
+    rows.push([
+      sanitizeCellInput(c.id),
+      sanitizeCellInput(c.name),
+      sanitizeCellInput(c.relationship || ""),
+      sanitizeCellInput(c.phoneNumber || ""),
+      c.active !== false ? "TRUE" : "FALSE",
+      c.createdAt || nowIso,
+      nowIso
+    ]);
   });
 
-  if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(1, sheet.getLastColumn())).clearContent();
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, 7).setValues(rows);
   }
-  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
 }
 
-/**
- * Calculates current family balances directly from saved records in Google Sheets
- */
 function calculateFamilyBalancesFromSheet(ss) {
-  var txSheet = ss.getSheetByName("Transactions");
+  var txs = readTransactionsFromSheet(ss);
   var contacts = readFamilyContactsFromSheet(ss);
 
-  var balancesByContact = {};
+  var balances = {};
   contacts.forEach(function(c) {
-    balancesByContact[c.id] = {
+    balances[c.id] = {
       contact: c,
       totalReimbursable: 0,
       totalRepaid: 0,
@@ -1109,1277 +615,668 @@ function calculateFamilyBalancesFromSheet(ss) {
     };
   });
 
-  if (!txSheet || txSheet.getLastRow() <= 1) {
-    return { appaBalance: 0, totalFamilyOutstanding: 0, balancesByContact: balancesByContact };
+  txs.forEach(function(t) {
+    var contactId = t.familyContactId;
+    if (!contactId && (t.isAppaReimbursable || t.type === 'repayment')) {
+      contactId = 'family-appa';
+    }
+    if (!contactId || !balances[contactId]) return;
+
+    var amt = Number(t.amount) || 0;
+    if (t.type === 'repayment') {
+      balances[contactId].totalRepaid += amt;
+    } else if (t.type === 'expense' && (t.isAppaReimbursable || t.isFamilyReimbursable)) {
+      balances[contactId].totalReimbursable += amt;
+      if (!t.appaSettled && t.settlementStatus !== 'settled') {
+        balances[contactId].pendingCount += 1;
+      }
+    }
+  });
+
+  var totalOutstanding = 0;
+  Object.keys(balances).forEach(function(k) {
+    var bal = balances[k];
+    bal.outstandingBalance = Math.max(0, bal.totalReimbursable - bal.totalRepaid);
+    if (bal.outstandingBalance <= 0) {
+      bal.pendingCount = 0;
+    }
+    totalOutstanding += bal.outstandingBalance;
+  });
+
+  return { balances: balances, totalOutstanding: totalOutstanding };
+}
+
+function archiveSettledTransactions(ss, batchId, contactId, txIds) {
+  if (!batchId || !contactId || !txIds || !Array.isArray(txIds) || txIds.length === 0) {
+    return errorResponse("Missing required parameters for archive (batchId, contactId, txIds)", 400);
   }
 
-  var data = txSheet.getDataRange().getValues();
+  var txSheet = ensureTransactionsSheet(ss);
+  var archiveSheet = ensureSettledArchiveSheet(ss);
+  var lastRow = txSheet.getLastRow();
+  if (lastRow <= 1) return errorResponse("Transactions sheet is empty", 400);
 
-  for (var i = 1; i < data.length; i++) {
+  var txData = txSheet.getRange(2, 1, lastRow - 1, 19).getValues();
+  var idSet = {};
+  txIds.forEach(function(id) { idSet[id] = true; });
+
+  var rowsToArchive = [];
+  var rowsToDeleteIndices = [];
+  var nowIso = new Date().toISOString();
+
+  for (var i = 0; i < txData.length; i++) {
+    var row = txData[i];
+    var id = String(row[0]).trim();
+    if (idSet[id]) {
+      var archiveId = "arch-" + id;
+      rowsToArchive.push([
+        archiveId, batchId, nowIso, id, row[1], row[2],
+        row[3], row[4], row[5], row[6], row[7], row[8],
+        row[11], row[12], "archived", row[17], row[18]
+      ]);
+      rowsToDeleteIndices.push(i + 2);
+    }
+  }
+
+  if (rowsToArchive.length === 0) {
+    return errorResponse("None of the specified transactions were found in the active sheet", 404);
+  }
+
+  // Append to archive sheet
+  for (var a = 0; a < rowsToArchive.length; a++) {
+    archiveSheet.appendRow(rowsToArchive[a]);
+  }
+
+  // Delete from active transactions in reverse order
+  rowsToDeleteIndices.sort(function(x, y) { return y - x; });
+  for (var d = 0; d < rowsToDeleteIndices.length; d++) {
+    txSheet.deleteRow(rowsToDeleteIndices[d]);
+  }
+
+  logAuditEvent(ss, "ARCHIVE", "archive", batchId, "Archived " + rowsToArchive.length + " items for contact " + contactId, "SUCCESS");
+  return successResponse("Archived " + rowsToArchive.length + " transactions successfully", { batchId: batchId, count: rowsToArchive.length });
+}
+
+function restoreArchivedTransactions(ss, batchId) {
+  if (!batchId) return errorResponse("Batch ID is required for restore", 400);
+
+  var archiveSheet = ensureSettledArchiveSheet(ss);
+  var txSheet = ensureTransactionsSheet(ss);
+  var lastRow = archiveSheet.getLastRow();
+  if (lastRow <= 1) return errorResponse("Archive sheet is empty", 404);
+
+  var data = archiveSheet.getRange(2, 1, lastRow - 1, 17).getValues();
+  var rowsToRestore = [];
+  var rowsToDeleteIndices = [];
+
+  for (var i = 0; i < data.length; i++) {
     var row = data[i];
-    var type = String(row[3]).toLowerCase();
-    var amount = Number(row[4]) || 0;
-    var isAppa = String(row[7]).toUpperCase() === 'YES';
-    var isSettled = String(row[8]).toUpperCase() === 'YES';
-    var contactId = row[11] ? String(row[11]) : (isAppa ? 'family-appa' : '');
-
-    // Map legacy repayments mentioning Appa
-    if (type === 'repayment' && !contactId) {
-      var d = String(row[2] || '').toLowerCase();
-      if (d.includes('appa') || isSettled) {
-        contactId = 'family-appa';
-      }
-    }
-
-    if (!contactId) continue;
-
-    if (!balancesByContact[contactId]) {
-      balancesByContact[contactId] = {
-        contact: { id: contactId, name: row[12] ? String(row[12]) : contactId, active: true },
-        totalReimbursable: 0,
-        totalRepaid: 0,
-        outstandingBalance: 0,
-        pendingCount: 0
-      };
-    }
-
-    var b = balancesByContact[contactId];
-    if (type === 'expense' && (isAppa || contactId)) {
-      b.totalReimbursable += amount;
-      if (!isSettled && String(row[13]).toLowerCase() !== 'settled') {
-        b.pendingCount++;
-      }
-    } else if (type === 'repayment') {
-      b.totalRepaid += amount;
+    if (String(row[1]).trim() === batchId) {
+      rowsToRestore.push([
+        row[3], row[4], row[5], row[6], row[7], row[8],
+        row[9], row[10], row[11],
+        row[12] === 'family-appa' ? "TRUE" : "FALSE",
+        "TRUE", row[12], row[13],
+        "TRUE", "settled", "", "", row[15], row[16]
+      ]);
+      rowsToDeleteIndices.push(i + 2);
     }
   }
 
-  var totalFamilyOutstanding = 0;
-  Object.keys(balancesByContact).forEach(function(id) {
-    var b = balancesByContact[id];
-    b.outstandingBalance = Math.max(0, b.totalReimbursable - b.totalRepaid);
-    totalFamilyOutstanding += b.outstandingBalance;
-  });
+  if (rowsToRestore.length === 0) {
+    return errorResponse("No archived records found for batch ID: " + batchId, 404);
+  }
 
-  var appaBal = balancesByContact['family-appa'] ? balancesByContact['family-appa'].outstandingBalance : 0;
+  for (var r = 0; r < rowsToRestore.length; r++) {
+    txSheet.appendRow(rowsToRestore[r]);
+  }
 
-  return {
-    appaBalance: appaBal,
-    totalFamilyOutstanding: totalFamilyOutstanding,
-    balancesByContact: balancesByContact
-  };
+  rowsToDeleteIndices.sort(function(x, y) { return y - x; });
+  for (var d = 0; d < rowsToDeleteIndices.length; d++) {
+    archiveSheet.deleteRow(rowsToDeleteIndices[d]);
+  }
+
+  logAuditEvent(ss, "RESTORE", "archive", batchId, "Restored " + rowsToRestore.length + " items to active Transactions", "SUCCESS");
+  return successResponse("Restored " + rowsToRestore.length + " transactions successfully", { batchId: batchId, count: rowsToRestore.length });
 }
+
+function readSettledArchiveFromSheet(ss) {
+  var sheet = ensureSettledArchiveSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
+
+  var data = sheet.getRange(2, 1, lastRow - 1, 17).getValues();
+  var items = [];
+  for (var i = 0; i < data.length; i++) {
+    var r = data[i];
+    items.push({
+      id: String(r[0]),
+      batchId: String(r[1]),
+      archivedAt: String(r[2]),
+      originalTxId: String(r[3]),
+      date: formatDateForSheet(String(r[4])),
+      title: String(r[5]),
+      amount: Number(r[6]) || 0,
+      type: String(r[7]),
+      category: String(r[8]),
+      paymentMethod: String(r[9]),
+      accountId: String(r[10]),
+      accountName: String(r[11]),
+      familyContactId: String(r[12]),
+      familyContactName: String(r[13]),
+      settlementStatus: String(r[14]),
+      notes: String(r[15]),
+      originalCreatedAt: String(r[16])
+    });
+  }
+  return items;
+}
+
+
+// ==============================================================================
+// MODULE: freelanceService.gs
+// ==============================================================================
 
 /**
- * Dedicated Appa Ledger Sheet: shows only Appa reimbursable expenses, repayments, and running balance
+ * MSR Penny — Google Apps Script Freelance, Accounts & Health Service
+ * File: freelanceService.gs
  */
-function syncAppaLedgerSheet(ss, transactions) {
-  var appaSheet = getOrCreateSheet(ss, "Appa_Ledger", [
-    "Date", "Transaction ID", "Description", "Type", "Claimed Expense (₹)", "Repaid by Appa (₹)", "Running Balance (₹)", "Settled"
-  ]);
 
-  if (appaSheet.getLastRow() > 1) {
-    var lastCol = Math.max(1, appaSheet.getLastColumn());
-    appaSheet.getRange(2, 1, appaSheet.getLastRow() - 1, lastCol).clearContent();
-  }
-
-  var relevant = (transactions || []).filter(function(t) {
-    var isAppa = t.isAppaReimbursable || t.familyContactId === 'family-appa';
-    var isRepay = t.type === 'repayment' && (t.familyContactId === 'family-appa' || !t.familyContactId);
-    return isAppa || isRepay;
-  }).sort(function(a, b) {
-    return new Date(a.date).getTime() - new Date(b.date).getTime();
-  });
-
-  if (relevant.length === 0) return;
-
-  var runningBalance = 0;
-  var rows = [];
-
-  for (var i = 0; i < relevant.length; i++) {
-    var item = relevant[i];
-    var isRepay = item.type === 'repayment';
-    var amt = Number(item.amount) || 0;
-    var claimed = isRepay ? 0 : amt;
-    var repaid = isRepay ? amt : 0;
-
-    runningBalance = Math.max(0, runningBalance + claimed - repaid);
-
-    rows.push([
-      formatDateForSheet(item.date),
-      item.id,
-      item.title,
-      isRepay ? "Repayment" : "College Expense",
-      claimed > 0 ? claimed : "-",
-      repaid > 0 ? repaid : "-",
-      runningBalance,
-      item.appaSettled ? "YES" : "PENDING"
-    ]);
-  }
-
-  appaSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-  formatCurrencyColumn(appaSheet, 5, 2, rows.length);
-  formatCurrencyColumn(appaSheet, 6, 2, rows.length);
-  formatCurrencyColumn(appaSheet, 7, 2, rows.length);
-}
-
-function rebuildAppaLedger(ss) {
-  var txSheet = ss.getSheetByName("Transactions");
-  if (!txSheet || txSheet.getLastRow() <= 1) return;
-
-  var data = txSheet.getDataRange().getValues();
-  var txList = [];
-  for (var i = 1; i < data.length; i++) {
-    var isAppa = String(data[i][7]).toUpperCase() === 'YES' || String(data[i][11]) === 'family-appa';
-    var type = String(data[i][3]).toLowerCase();
-    var isRepay = type === 'repayment' && (String(data[i][11]) === 'family-appa' || !data[i][11]);
-    
-    if (isAppa || isRepay) {
-      txList.push({
-        id: data[i][0],
-        date: data[i][1],
-        title: data[i][2],
-        type: type,
-        amount: Number(data[i][4]) || 0,
-        isAppaReimbursable: isAppa,
-        familyContactId: data[i][11],
-        appaSettled: String(data[i][8]).toUpperCase() === 'YES'
-      });
-    }
-  }
-  syncAppaLedgerSheet(ss, txList);
-}
-
-/**
- * Freelance Projects Sheet
- */
-function syncFreelanceSheet(ss, jobs) {
-  var sheet = getOrCreateSheet(ss, "Freelance_Projects", [
-    "Job ID", "Project Title", "Client Name", "Total Fee (₹)", "Paid Amount (₹)", "Pending (₹)", "Status", "Due Date", "Design Type", "Notes", "Milestones"
-  ]);
-
-  if (sheet.getLastRow() > 1) {
-    var lastCol = Math.max(1, sheet.getLastColumn());
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).clearContent();
-  }
-
-  if (!jobs || jobs.length === 0) return;
-
-  var rows = jobs.map(function(j) {
-    var milestonesSummary = (j.milestones || []).map(function(m) {
-      return m.title + " (₹" + m.amount + (m.paid ? " - Paid" : " - Pending") + ")";
-    }).join("; ");
-
-    return [
-      j.id,
-      j.title,
-      j.clientName,
-      Number(j.totalFee) || 0,
-      Number(j.paidAmount) || 0,
-      Number(j.pendingAmount) || 0,
-      j.status || "in_progress",
-      j.dueDate || "",
-      j.designType || "Poster",
-      j.notes || "",
-      milestonesSummary
-    ];
-  });
-
-  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-  formatCurrencyColumn(sheet, 4, 2, rows.length);
-  formatCurrencyColumn(sheet, 5, 2, rows.length);
-  formatCurrencyColumn(sheet, 6, 2, rows.length);
-}
-
-/**
- * Reads freelance projects from Freelance_Projects sheet
- */
 function readFreelanceProjectsFromSheet(ss) {
-  var sheet = ss.getSheetByName("Freelance_Projects");
-  if (!sheet || sheet.getLastRow() <= 1) return [];
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.FREELANCE);
+  if (!sheet) return [];
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
 
-  var data = sheet.getDataRange().getValues();
+  var data = sheet.getRange(2, 1, lastRow - 1, 8).getValues();
   var jobs = [];
-  for (var i = 1; i < data.length; i++) {
+
+  for (var i = 0; i < data.length; i++) {
     var row = data[i];
-    if (!row[0]) continue;
+    var id = String(row[0]).trim();
+    if (!id) continue;
+
+    var milestones = [];
+    try {
+      if (row[7]) milestones = JSON.parse(String(row[7]));
+    } catch (e) {
+      milestones = [];
+    }
+
     jobs.push({
-      id: String(row[0]),
-      title: String(row[1] || ''),
-      clientName: String(row[2] || ''),
-      totalFee: Number(row[3]) || 0,
-      paidAmount: Number(row[4]) || 0,
-      pendingAmount: Number(row[5]) || 0,
-      status: String(row[6] || 'in_progress').toLowerCase(),
-      dueDate: formatDateForSheet(row[7]),
-      designType: row[8] ? String(row[8]) : 'Poster',
-      notes: row[9] ? String(row[9]) : '',
-      milestones: [],
-      costs: []
+      id: id,
+      clientName: String(row[1] || ""),
+      projectTitle: String(row[2] || ""),
+      totalAmount: Number(row[3]) || 0,
+      receivedAmount: Number(row[4]) || 0,
+      status: String(row[5] || "in_progress"),
+      notes: String(row[6] || ""),
+      milestones: milestones
     });
   }
   return jobs;
 }
 
-/**
- * Savings & Goals Sheet
- */
-function syncSavingsSheet(ss, savings) {
-  var sheet = getOrCreateSheet(ss, "Savings_Goals", [
-    "Category", "Goal Title", "Current (₹)", "Target (₹)", "Progress %", "Target Date / Notes"
-  ]);
+function syncFreelanceSheet(ss, jobs) {
+  if (!jobs || !Array.isArray(jobs)) return;
+  var headers = ["Job ID", "Client Name", "Project Title", "Total Amount (₹)", "Received Amount (₹)", "Status", "Notes", "Milestones (JSON)"];
+  var sheet = getOrCreateSheet(ss, CONFIG.SHEETS.FREELANCE, headers);
 
-  if (sheet.getLastRow() > 1) {
-    var lastCol = Math.max(1, sheet.getLastColumn());
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).clearContent();
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, 8).clearContent();
   }
 
   var rows = [];
-
-  if (savings.emergencyFund) {
-    var ef = savings.emergencyFund;
-    var efPercent = ef.target > 0 ? Math.round((ef.current / ef.target) * 100) : 0;
+  jobs.forEach(function(j) {
     rows.push([
-      "Emergency Fund",
-      ef.title || "Emergency Fund",
-      Number(ef.current) || 0,
-      Number(ef.target) || 0,
-      efPercent + "%",
-      ef.subtitle || "1 Month Living Buffer"
+      sanitizeCellInput(j.id),
+      sanitizeCellInput(j.clientName),
+      sanitizeCellInput(j.projectTitle),
+      Number(j.totalAmount) || 0,
+      Number(j.receivedAmount) || 0,
+      sanitizeCellInput(j.status || "in_progress"),
+      sanitizeCellInput(j.notes || ""),
+      JSON.stringify(j.milestones || [])
     ]);
-  }
-
-  if (savings.goals && savings.goals.length > 0) {
-    savings.goals.forEach(function(g) {
-      var pct = g.target > 0 ? Math.round((g.current / g.target) * 100) : 0;
-      rows.push([
-        "Personal Goal",
-        g.title,
-        Number(g.current) || 0,
-        Number(g.target) || 0,
-        pct + "%",
-        g.deadline || "Ongoing"
-      ]);
-    });
-  }
-
-  if (rows.length > 0) {
-    sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-    formatCurrencyColumn(sheet, 3, 2, rows.length);
-    formatCurrencyColumn(sheet, 4, 2, rows.length);
-  }
-}
-
-/**
- * Summary KPI Dashboard Sheet
- */
-function updateSummaryDashboard(ss, transactions, settings) {
-  var sheet = getOrCreateSheet(ss, "Summary", [
-    "Metric", "Value", "Notes"
-  ]);
-
-  var balanceInfo = calculateFamilyBalancesFromSheet(ss);
-  var totalIncome = 0;
-  var personalSpent = 0;
-
-  var txSheet = ss.getSheetByName("Transactions");
-  var allTxs = [];
-  if (txSheet && txSheet.getLastRow() > 1) {
-    var data = txSheet.getDataRange().getValues();
-    for (var i = 1; i < data.length; i++) {
-      allTxs.push({
-        type: String(data[i][3]).toLowerCase(),
-        amount: Number(data[i][4]) || 0,
-        isReimbursable: String(data[i][7]).toUpperCase() === 'YES' || Boolean(data[i][11])
-      });
-    }
-  } else {
-    allTxs = transactions || [];
-  }
-
-  allTxs.forEach(function(t) {
-    var amt = Number(t.amount) || 0;
-    if (t.type === 'income') {
-      totalIncome += amt;
-    } else if (t.type === 'expense' && !t.isReimbursable && !t.isAppaReimbursable && !t.isFamilyReimbursable) {
-      personalSpent += amt;
-    }
   });
 
-  var availableCash = Math.max(0, totalIncome - personalSpent);
-  var monthlyBudget = (settings && Number(settings.monthlyBudget)) || 4000;
-
-  var formattedTime = "";
-  try {
-    formattedTime = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd MMM yyyy, hh:mm a");
-  } catch (e) {
-    formattedTime = new Date().toISOString();
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, 8).setValues(rows);
   }
-
-  var summaryData = [
-    ["Family Settlements Outstanding", "₹" + balanceInfo.totalFamilyOutstanding, "Total amount owed across all family members"],
-    ["Appa Outstanding Owed", "₹" + balanceInfo.appaBalance, "Amount Appa owes back to you"],
-    ["Available Balance", "₹" + availableCash, "Total Income minus personal spent"],
-    ["Total Personal Expenses", "₹" + personalSpent, "Excludes expenses claimed to family members"],
-    ["Total Freelance & Inflows", "₹" + totalIncome, "Direct student & client income"],
-    ["Monthly Budget Target", "₹" + monthlyBudget, "Configured in MSR Penny Settings"],
-    ["Last Synced Timestamp", formattedTime, "Synced from MSR Penny App"]
-  ];
-
-  if (sheet.getLastRow() > 1) {
-    var lastCol = Math.max(1, sheet.getLastColumn());
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).clearContent();
-  }
-
-  sheet.getRange(2, 1, summaryData.length, summaryData[0].length).setValues(summaryData);
-}
-
-function formatDateForSheet(dateStr) {
-  if (!dateStr) return new Date().toISOString().split('T')[0];
-  if (dateStr instanceof Date) {
-    return Utilities.formatDate(dateStr, "Asia/Kolkata", "yyyy-MM-dd");
-  }
-  try {
-    var d = new Date(dateStr);
-    if (!isNaN(d.getTime())) {
-      return Utilities.formatDate(d, "Asia/Kolkata", "yyyy-MM-dd");
-    }
-    return String(dateStr).split('T')[0];
-  } catch (e) {
-    return String(dateStr);
-  }
-}
-
-function formatCurrencyColumn(sheet, colIndex, startRow, numRows) {
-  try {
-    if (numRows > 0) {
-      sheet.getRange(startRow, colIndex, numRows, 1).setNumberFormat('₹#,##0.00');
-    }
-  } catch (e) {}
-}
-
-
-/**
- * Accounts and Transfers Schema Helpers (MSR Penny v2)
- */
-function getDefaultAccounts() {
-  var now = new Date().toISOString();
-  return [
-    { id: "acc-sbi", name: "SBI (Main)", type: "bank", openingBalance: 0, openingDate: "2026-10-01", active: true, createdAt: now, updatedAt: now },
-    { id: "acc-iob", name: "IOB (Second)", type: "bank", openingBalance: 0, openingDate: "2026-10-01", active: true, createdAt: now, updatedAt: now },
-    { id: "acc-cash", name: "Cash", type: "cash", openingBalance: 0, openingDate: "2026-10-01", active: true, createdAt: now, updatedAt: now }
-  ];
-}
-
-function getAccountsHeader() {
-  return ["Account ID", "Account Name", "Type", "Opening Balance (₹)", "Opening Date", "Active", "Created At", "Updated At"];
-}
-
-function ensureAccountsSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return;
-  var header = getAccountsHeader();
-  var sheet = getOrCreateSheet(ss, "Accounts", header);
-  if (sheet.getLastRow() <= 1) {
-    var defaults = getDefaultAccounts();
-    var rows = defaults.map(function(a) {
-      return [a.id, a.name, a.type, a.openingBalance, a.openingDate, a.active ? "YES" : "NO", a.createdAt, a.updatedAt];
-    });
-    sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-    formatCurrencyColumn(sheet, 4, 2, rows.length);
-  }
-  return sheet;
 }
 
 function readAccountsFromSheet(ss) {
-  var sheet = ss.getSheetByName("Accounts");
-  if (!sheet || sheet.getLastRow() <= 1) {
-    return getDefaultAccounts();
-  }
-  var data = sheet.getDataRange().getValues();
+  var sheet = ensureAccountsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return getDefaultAccounts();
+
+  var data = sheet.getRange(2, 1, lastRow - 1, 8).getValues();
   var accounts = [];
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    if (!row[0]) continue;
+
+  for (var i = 0; i < data.length; i++) {
+    var r = data[i];
+    var id = String(r[0]).trim();
+    if (!id) continue;
+
     accounts.push({
-      id: String(row[0]),
-      name: String(row[1] || row[0]),
-      type: String(row[2] || 'bank').toLowerCase(),
-      openingBalance: Number(row[3]) || 0,
-      openingDate: formatDateForSheet(row[4]),
-      active: String(row[5]).toUpperCase() !== "NO",
-      createdAt: row[6] ? String(row[6]) : new Date().toISOString(),
-      updatedAt: row[7] ? String(row[7]) : new Date().toISOString()
+      id: id,
+      name: String(r[1] || ""),
+      type: String(r[2] || "bank"),
+      openingBalance: Number(r[3]) || 0,
+      openingDate: formatDateForSheet(String(r[4] || "2026-01-01")),
+      active: String(r[5]).toUpperCase() === "TRUE",
+      createdAt: r[6] ? String(r[6]) : new Date().toISOString(),
+      updatedAt: r[7] ? String(r[7]) : new Date().toISOString()
     });
   }
   return accounts.length > 0 ? accounts : getDefaultAccounts();
 }
 
-function syncAccountsSheet(ss, accounts) {
-  var header = getAccountsHeader();
-  var sheet = getOrCreateSheet(ss, "Accounts", header);
-  if (!accounts || accounts.length === 0) return;
-  var now = new Date().toISOString();
-  var rows = accounts.map(function(a) {
-    return [
-      a.id,
-      a.name,
-      a.type,
-      Number(a.openingBalance) || 0,
-      formatDateForSheet(a.openingDate),
-      a.active !== false ? "YES" : "NO",
-      a.createdAt || now,
-      now
-    ];
-  });
-  if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(1, sheet.getLastColumn())).clearContent();
-  }
-  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-  formatCurrencyColumn(sheet, 4, 2, rows.length);
-}
-
-/**
- * Creates a dated backup copy of the Accounts tab: Accounts_backup_YYYY-MM-DD_HHmm
- * Prunes backups older than the 10 most recent.
- */
-function backupAccountsSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return null;
-  var accSheet = ss.getSheetByName("Accounts");
-  if (!accSheet || accSheet.getLastRow() <= 1) return null;
-
-  var timestamp = Utilities.formatDate(new Date(), "Asia/Kolkata", "yyyy-MM-dd_HHmm");
-  var backupName = "Accounts_backup_" + timestamp;
-
-  // If already backed up in the same minute, return it
-  var existingBackup = ss.getSheetByName(backupName);
-  if (existingBackup) {
-    return backupName;
-  }
-
-  var backupSheet = accSheet.copyTo(ss);
-  backupSheet.setName(backupName);
-
-  pruneOldAccountsBackups(ss, 10);
-  return backupName;
-}
-
-function pruneOldAccountsBackups(ss, maxKeep) {
-  if (!ss) return;
-  var sheets = ss.getSheets();
-  var backupSheets = [];
-  for (var i = 0; i < sheets.length; i++) {
-    var name = sheets[i].getName();
-    if (name.indexOf("Accounts_backup_") === 0) {
-      backupSheets.push({ sheet: sheets[i], name: name });
-    }
-  }
-
-  backupSheets.sort(function(a, b) {
-    return b.name.localeCompare(a.name);
-  });
-
-  for (var j = maxKeep; j < backupSheets.length; j++) {
-    try {
-      ss.deleteSheet(backupSheets[j].sheet);
-    } catch (e) {}
-  }
-}
-
-/**
- * Saves Accounts with LockService, server-side validation, automated backup,
- * audit logging, and read-back verification.
- */
 function saveAccountsWithAuditAndBackup(ss, accounts) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return { success: false, error: "Spreadsheet not found" };
-
-  if (!Array.isArray(accounts) || accounts.length === 0) {
-    return { success: false, error: "Accounts array is required" };
+  if (!accounts || !Array.isArray(accounts) || accounts.length === 0) {
+    return errorResponse("Accounts array must not be empty", 400);
   }
 
-  // Validate server-side: allowed account IDs and non-negative amounts
-  var allowedIds = { "acc-sbi": true, "acc-iob": true, "acc-cash": true };
-  for (var i = 0; i < accounts.length; i++) {
-    var a = accounts[i];
-    if (!a.id || !allowedIds[a.id]) {
-      return { success: false, error: "Invalid account ID: " + a.id };
-    }
-    var num = Number(a.openingBalance);
-    if (isNaN(num) || num < 0) {
-      return { success: false, error: "Opening balance cannot be negative or invalid for " + (a.name || a.id) };
-    }
+  var sheet = ensureAccountsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, 8).clearContent();
   }
 
-  var lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(30000); // 30-second timeout for atomic lock
-  } catch (lockErr) {
-    return { success: false, error: "Concurrent write in progress. Please retry in a few moments." };
+  var rows = [];
+  var nowIso = new Date().toISOString();
+  accounts.forEach(function(a) {
+    rows.push([
+      sanitizeCellInput(a.id),
+      sanitizeCellInput(a.name),
+      sanitizeCellInput(a.type || "bank"),
+      Number(a.openingBalance) || 0,
+      formatDateForSheet(a.openingDate || "2026-01-01"),
+      a.active !== false ? "TRUE" : "FALSE",
+      a.createdAt || nowIso,
+      nowIso
+    ]);
+  });
+
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, 8).setValues(rows);
   }
 
-  try {
-    var currentAccounts = readAccountsFromSheet(ss);
-    var currentMap = {};
-    for (var c = 0; c < currentAccounts.length; c++) {
-      currentMap[currentAccounts[c].id] = currentAccounts[c];
-    }
-
-    var changes = [];
-    var now = new Date().toISOString();
-
-    for (var k = 0; k < accounts.length; k++) {
-      var acc = accounts[k];
-      var old = currentMap[acc.id];
-      if (old) {
-        var balChanged = Math.abs((Number(acc.openingBalance) || 0) - (Number(old.openingBalance) || 0)) > 0.001;
-        var dateChanged = formatDateForSheet(acc.openingDate) !== formatDateForSheet(old.openingDate);
-        var nameChanged = acc.name && acc.name.trim() !== old.name;
-
-        if (balChanged || dateChanged || nameChanged) {
-          changes.push({
-            id: acc.id,
-            name: acc.name || old.name,
-            oldBalance: old.openingBalance,
-            newBalance: Number(acc.openingBalance) || 0,
-            oldDate: old.openingDate,
-            newDate: formatDateForSheet(acc.openingDate),
-            balChanged: balChanged,
-            dateChanged: dateChanged,
-            nameChanged: nameChanged
-          });
-        }
-      }
-    }
-
-    var backupCreated = null;
-    if (changes.length > 0) {
-      // 1. Create safety backup
-      backupCreated = backupAccountsSheet(ss);
-
-      // 2. Map updated rows while preserving row structure and CreatedAt
-      var updatedList = currentAccounts.map(function(existing) {
-        var inputAcc = null;
-        for (var idx = 0; idx < accounts.length; idx++) {
-          if (accounts[idx].id === existing.id) {
-            inputAcc = accounts[idx];
-            break;
-          }
-        }
-        if (!inputAcc) return existing;
-
-        var wasModified = false;
-        for (var ci = 0; ci < changes.length; ci++) {
-          if (changes[ci].id === existing.id) {
-            wasModified = true;
-            break;
-          }
-        }
-
-        return {
-          id: existing.id,
-          name: inputAcc.name || existing.name,
-          type: existing.type,
-          openingBalance: Number(inputAcc.openingBalance) || 0,
-          openingDate: formatDateForSheet(inputAcc.openingDate || existing.openingDate),
-          active: inputAcc.active !== false,
-          createdAt: existing.createdAt || now,
-          updatedAt: wasModified ? now : (existing.updatedAt || now)
-        };
-      });
-
-      // 3. Write to Accounts sheet
-      var header = getAccountsHeader();
-      var sheet = getOrCreateSheet(ss, "Accounts", header);
-      var rows = updatedList.map(function(a) {
-        return [
-          a.id,
-          a.name,
-          a.type,
-          a.openingBalance,
-          a.openingDate,
-          a.active ? "YES" : "NO",
-          a.createdAt,
-          a.updatedAt
-        ];
-      });
-
-      if (sheet.getLastRow() > 1) {
-        sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(1, sheet.getLastColumn())).clearContent();
-      }
-      sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-      formatCurrencyColumn(sheet, 4, 2, rows.length);
-
-      // 4. Audit log each changed account
-      for (var l = 0; l < changes.length; l++) {
-        var ch = changes[l];
-        var summary = "Changed " + ch.id + " (" + ch.name + "): Opening ₹" + ch.oldBalance + " -> ₹" + ch.newBalance +
-                      (ch.dateChanged ? " | Date " + ch.oldDate + " -> " + ch.newDate : "");
-        logAuditEvent(ss, "OPENING_BALANCE_CHANGED", "account", ch.id, summary, "SUCCESS");
-      }
-    }
-
-    // 5. Read-back verification: read authoritative sheet content
-    var verifiedAccounts = readAccountsFromSheet(ss);
-
-    return {
-      success: true,
-      message: changes.length > 0 ? "Accounts and opening balances saved successfully." : "No changes detected.",
-      changesCount: changes.length,
-      backupName: backupCreated,
-      accounts: verifiedAccounts
-    };
-  } catch (err) {
-    return { success: false, error: "Failed to update accounts: " + err.message };
-  } finally {
-    try {
-      lock.releaseLock();
-    } catch (e) {}
-  }
-}
-
-/**
- * Restores accounts from a specified backup sheet.
- */
-function restoreAccountsBackup(ss, backupName) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return { success: false, error: "Spreadsheet not found" };
-
-  var lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(30000);
-  } catch (e) {
-    return { success: false, error: "Spreadsheet lock timeout." };
-  }
-
-  try {
-    if (!backupName) {
-      var sheets = ss.getSheets();
-      var latestName = "";
-      for (var i = 0; i < sheets.length; i++) {
-        var sName = sheets[i].getName();
-        if (sName.indexOf("Accounts_backup_") === 0 && sName > latestName) {
-          latestName = sName;
-        }
-      }
-      backupName = latestName;
-    }
-
-    if (!backupName) {
-      return { success: false, error: "No previous backup found to restore." };
-    }
-
-    var bSheet = ss.getSheetByName(backupName);
-    if (!bSheet || bSheet.getLastRow() <= 1) {
-      return { success: false, error: "Backup sheet '" + backupName + "' not found or empty." };
-    }
-
-    // Safety backup of current state
-    backupAccountsSheet(ss);
-
-    var bData = bSheet.getDataRange().getValues();
-    var accSheet = ss.getSheetByName("Accounts");
-    if (!accSheet) {
-      accSheet = getOrCreateSheet(ss, "Accounts", getAccountsHeader());
-    }
-
-    if (accSheet.getLastRow() > 1) {
-      accSheet.getRange(2, 1, accSheet.getLastRow() - 1, Math.max(1, accSheet.getLastColumn())).clearContent();
-    }
-
-    var restoredRows = bData.slice(1);
-    if (restoredRows.length > 0) {
-      accSheet.getRange(2, 1, restoredRows.length, restoredRows[0].length).setValues(restoredRows);
-      formatCurrencyColumn(accSheet, 4, 2, restoredRows.length);
-    }
-
-    logAuditEvent(ss, "RESTORE_OPENING_BALANCES", "account", "all", "Restored accounts from backup " + backupName, "SUCCESS");
-
-    var restoredAccounts = readAccountsFromSheet(ss);
-    return {
-      success: true,
-      message: "Restored accounts successfully from " + backupName,
-      backupName: backupName,
-      accounts: restoredAccounts
-    };
-  } catch (err) {
-    return { success: false, error: "Restore failed: " + err.message };
-  } finally {
-    try {
-      lock.releaseLock();
-    } catch (e) {}
-  }
-}
-
-function getTransfersHeader() {
-  return ["Transfer ID", "Date", "From Account ID", "To Account ID", "Amount (₹)", "Notes", "Created At", "Updated At", "Deleted"];
-}
-
-function ensureTransfersSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return;
-  var header = getTransfersHeader();
-  return getOrCreateSheet(ss, "Transfers", header);
+  logAuditEvent(ss, "UPDATE_ACCOUNTS", "accounts", "all", "Updated " + accounts.length + " accounts opening balances", "SUCCESS");
+  return successResponse("Accounts updated successfully", { accounts: accounts });
 }
 
 function readTransfersFromSheet(ss) {
-  var sheet = ss.getSheetByName("Transfers");
-  if (!sheet || sheet.getLastRow() <= 1) return [];
-  var data = sheet.getDataRange().getValues();
+  var sheet = ensureTransfersSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
+
+  var data = sheet.getRange(2, 1, lastRow - 1, 10).getValues();
   var transfers = [];
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    if (!row[0]) continue;
-    var isDeleted = String(row[8]).toUpperCase() === "YES";
-    if (isDeleted) continue;
+
+  for (var i = 0; i < data.length; i++) {
+    var r = data[i];
+    var id = String(r[0]).trim();
+    if (!id) continue;
+
     transfers.push({
-      id: String(row[0]),
-      date: formatDateForSheet(row[1]),
-      fromAccountId: String(row[2]),
-      toAccountId: String(row[3]),
-      amount: Number(row[4]) || 0,
-      notes: String(row[5] || ""),
-      createdAt: row[6] ? String(row[6]) : new Date().toISOString(),
-      updatedAt: row[7] ? String(row[7]) : new Date().toISOString(),
-      deleted: false
+      id: id,
+      date: formatDateForSheet(String(r[1])),
+      amount: Number(r[2]) || 0,
+      fromAccountId: String(r[3] || ""),
+      fromAccountName: String(r[4] || ""),
+      toAccountId: String(r[5] || ""),
+      toAccountName: String(r[6] || ""),
+      fee: Number(r[7]) || 0,
+      notes: String(r[8] || ""),
+      createdAt: r[9] ? String(r[9]) : new Date().toISOString()
     });
   }
   return transfers;
 }
 
 function saveSingleTransfer(ss, tr) {
-  if (!tr || !tr.amount || Number(tr.amount) <= 0 || !tr.fromAccountId || !tr.toAccountId) {
-    return { success: false, error: "Invalid transfer: positive amount and from/to accounts are required." };
+  var validation = validateTransfer(tr);
+  if (!validation.valid) {
+    return errorResponse(validation.error, 400);
   }
+
   var sheet = ensureTransfersSheet(ss);
-  var trId = String(tr.id || ('tr-' + Date.now())).trim();
-  var rowValues = [
-    trId,
+  var rowData = [
+    sanitizeCellInput(tr.id),
     formatDateForSheet(tr.date),
-    String(tr.fromAccountId),
-    String(tr.toAccountId),
     Number(tr.amount) || 0,
-    String(tr.notes || ""),
-    tr.createdAt || new Date().toISOString(),
-    new Date().toISOString(),
-    tr.deleted ? "YES" : "NO"
+    sanitizeCellInput(tr.fromAccountId),
+    sanitizeCellInput(tr.fromAccountName || ""),
+    sanitizeCellInput(tr.toAccountId),
+    sanitizeCellInput(tr.toAccountName || ""),
+    Number(tr.fee) || 0,
+    sanitizeCellInput(tr.notes || ""),
+    tr.createdAt ? formatDateForSheet(tr.createdAt) : new Date().toISOString()
   ];
-  var data = sheet.getDataRange().getValues();
-  var existingIdx = -1;
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === trId) {
-      existingIdx = i + 1;
-      break;
-    }
-  }
-  if (existingIdx > 0) {
-    sheet.getRange(existingIdx, 1, 1, rowValues.length).setValues([rowValues]);
-  } else {
-    sheet.appendRow(rowValues);
-    formatCurrencyColumn(sheet, 5, sheet.getLastRow(), 1);
-  }
-  return { success: true, transferId: trId, message: "Transfer recorded successfully." };
+
+  sheet.appendRow(rowData);
+  logAuditEvent(ss, "CREATE_TRANSFER", "transfer", tr.id, "Recorded transfer of ₹" + tr.amount, "SUCCESS");
+  return successResponse("Transfer recorded successfully", { transfer: tr });
 }
 
 function deleteSingleTransfer(ss, trId) {
-  if (!trId) return { success: false, error: "Transfer ID required." };
+  if (!trId) return errorResponse("Transfer ID is required", 400);
   var sheet = ensureTransfersSheet(ss);
-  var data = sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === String(trId).trim()) {
-      sheet.deleteRow(i + 1);
-      return { success: true, message: "Transfer deleted." };
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return errorResponse("Transfer not found", 404);
+
+  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]).trim() === trId) {
+      sheet.deleteRow(i + 2);
+      logAuditEvent(ss, "DELETE_TRANSFER", "transfer", trId, "Deleted transfer " + trId, "SUCCESS");
+      return successResponse("Transfer deleted successfully", { id: trId });
     }
   }
-  return { success: false, notFound: true, error: "Transfer not found." };
-}
-
-function createBackupTransactionsSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return;
-  var txSheet = ss.getSheetByName("Transactions");
-  if (!txSheet) return;
-  var timestamp = Utilities.formatDate(new Date(), "Asia/Kolkata", "yyyyMMdd_HHmmss");
-  var backupName = "Backup_Tx_" + timestamp;
-  var backupSheet = txSheet.copyTo(ss);
-  backupSheet.setName(backupName);
-  return backupName;
-}
-
-function menuSetupAccountsAndTransfers() {
-  var ss = getTargetSpreadsheet();
-  if (ss) {
-    ensureAccountsSheet(ss);
-    ensureTransfersSheet(ss);
-    ensureTransactionsSheet(ss);
-  }
-}
-
-function getPushSubscriptionsHeader() {
-  return ["Subscription ID", "Endpoint", "P256dh Key", "Auth Key", "User Agent", "Created At", "Updated At"];
-}
-
-function ensurePushSubscriptionsSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return;
-  var header = getPushSubscriptionsHeader();
-  return getOrCreateSheet(ss, "Push_Subscriptions", header);
-}
-
-function readPushSubscriptionsFromSheet(ss) {
-  var sheet = ss.getSheetByName("Push_Subscriptions");
-  if (!sheet || sheet.getLastRow() <= 1) return [];
-  var data = sheet.getDataRange().getValues();
-  var subs = [];
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    if (!row[1]) continue;
-    subs.push({
-      id: String(row[0] || ""),
-      endpoint: String(row[1]),
-      keys: {
-        p256dh: String(row[2] || ""),
-        auth: String(row[3] || "")
-      },
-      userAgent: String(row[4] || ""),
-      createdAt: row[5] ? String(row[5]) : new Date().toISOString(),
-      updatedAt: row[6] ? String(row[6]) : new Date().toISOString()
-    });
-  }
-  return subs;
-}
-
-function savePushSubscriptionToSheet(ss, sub, userAgent) {
-  if (!sub || !sub.endpoint || !sub.keys) {
-    return { success: false, error: "Invalid push subscription object." };
-  }
-  var sheet = ensurePushSubscriptionsSheet(ss);
-  var data = sheet.getDataRange().getValues();
-  var now = new Date().toISOString();
-  var subId = sub.id || ('sub-' + Date.now());
-  var endpoint = String(sub.endpoint).trim();
-  var p256dh = String(sub.keys.p256dh || "").trim();
-  var auth = String(sub.keys.auth || "").trim();
-  var ua = String(userAgent || "PWA").trim();
-
-  var existingIdx = -1;
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][1]).trim() === endpoint) {
-      existingIdx = i + 1;
-      subId = String(data[i][0] || subId);
-      break;
-    }
-  }
-
-  var rowValues = [subId, endpoint, p256dh, auth, ua, now, now];
-  if (existingIdx > 0) {
-    var origCreatedAt = data[existingIdx - 1][5] || now;
-    rowValues[5] = origCreatedAt;
-    sheet.getRange(existingIdx, 1, 1, rowValues.length).setValues([rowValues]);
-  } else {
-    sheet.appendRow(rowValues);
-  }
-  return { success: true, message: "Push subscription saved to Google Sheet.", subscriptionId: subId };
-}
-
-// =============================================================================
-// MSR PENNY v3: SETTLED ARCHIVE, RECONCILIATIONS & AUDIT LOG
-// =============================================================================
-
-function getSettledArchiveHeader() {
-  return [
-    "Archive ID",
-    "Original Transaction ID",
-    "Date",
-    "Description",
-    "Type",
-    "Amount (₹)",
-    "Category",
-    "Payment Method",
-    "Account ID",
-    "Account Name",
-    "Family Contact ID",
-    "Family Contact Name",
-    "Archived At",
-    "Archive Batch ID",
-    "Notes"
-  ];
-}
-
-function ensureSettledArchiveSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return;
-  var header = getSettledArchiveHeader();
-  return getOrCreateSheet(ss, "Settled_Archive", header);
-}
-
-function getReconciliationsHeader() {
-  return [
-    "Reconciliation ID",
-    "Date",
-    "Account ID",
-    "Account Name",
-    "Real Balance (₹)",
-    "Computed Balance (₹)",
-    "Adjustment Amount (₹)",
-    "Notes",
-    "Created At"
-  ];
-}
-
-function ensureReconciliationsSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return;
-  var header = getReconciliationsHeader();
-  return getOrCreateSheet(ss, "Reconciliations", header);
-}
-
-function getAuditLogHeader() {
-  return [
-    "Log ID",
-    "Timestamp",
-    "Action",
-    "Entity Type",
-    "Entity ID",
-    "Summary",
-    "Status"
-  ];
-}
-
-function ensureAuditLogSheet(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
-  if (!ss) return;
-  var header = getAuditLogHeader();
-  return getOrCreateSheet(ss, "Audit_Log", header);
-}
-
-function logAuditEvent(ss, action, entityType, entityId, summary, status) {
-  try {
-    var sheet = ensureAuditLogSheet(ss);
-    var now = new Date().toISOString();
-    var logId = "log-" + Utilities.getUuid().slice(0, 8);
-    sheet.appendRow([
-      logId,
-      now,
-      String(action),
-      String(entityType),
-      String(entityId),
-      String(summary),
-      String(status || "SUCCESS")
-    ]);
-  } catch (err) {
-    // Audit logging should not crash primary operations
-  }
-}
-
-function readSettledArchiveFromSheet(ss) {
-  var sheet = ss.getSheetByName("Settled_Archive");
-  if (!sheet || sheet.getLastRow() <= 1) return [];
-  var data = sheet.getDataRange().getValues();
-  var archiveItems = [];
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    if (!row[0]) continue;
-    archiveItems.push({
-      id: String(row[0]),
-      originalTransactionId: String(row[1] || row[0]),
-      date: formatDateForSheet(row[2]),
-      title: String(row[3] || ""),
-      type: String(row[4] || "expense").toLowerCase(),
-      amount: Number(row[5]) || 0,
-      category: String(row[6] || "Family"),
-      paymentMethod: String(row[7] || "upi").toLowerCase(),
-      accountId: String(row[8] || "acc-sbi"),
-      accountName: String(row[9] || "SBI (Main)"),
-      familyContactId: String(row[10] || ""),
-      familyContactName: String(row[11] || ""),
-      archivedAt: row[12] ? String(row[12]) : new Date().toISOString(),
-      archiveBatchId: String(row[13] || ""),
-      notes: String(row[14] || "")
-    });
-  }
-  return archiveItems;
+  return errorResponse("Transfer not found", 404);
 }
 
 function readReconciliationsFromSheet(ss) {
-  var sheet = ss.getSheetByName("Reconciliations");
-  if (!sheet || sheet.getLastRow() <= 1) return [];
-  var data = sheet.getDataRange().getValues();
+  var sheet = ensureReconciliationsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
+
+  var data = sheet.getRange(2, 1, lastRow - 1, 9).getValues();
   var recs = [];
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    if (!row[0]) continue;
+  for (var i = 0; i < data.length; i++) {
+    var r = data[i];
     recs.push({
-      id: String(row[0]),
-      date: formatDateForSheet(row[1]),
-      accountId: String(row[2] || ""),
-      accountName: String(row[3] || ""),
-      realBalance: Number(row[4]) || 0,
-      computedBalance: Number(row[5]) || 0,
-      adjustmentAmount: Number(row[6]) || 0,
-      notes: String(row[7] || ""),
-      createdAt: row[8] ? String(row[8]) : new Date().toISOString()
+      id: String(r[0]),
+      reconciledAt: String(r[1]),
+      accountId: String(r[2]),
+      accountName: String(r[3]),
+      passbookBalance: Number(r[4]) || 0,
+      computedBalance: Number(r[5]) || 0,
+      adjustmentAmount: Number(r[6]) || 0,
+      notes: String(r[7] || ""),
+      createdAt: String(r[8] || "")
     });
   }
   return recs;
 }
 
-function archiveSettledTransactions(ss, batchId, contactId, txIds) {
-  if (!txIds || txIds.length === 0) {
-    return { success: false, error: "No transaction IDs provided for archiving." };
-  }
-
-  // 1. Automatic pre-archive backup snapshot
-  createBackupTransactionsSheet(ss);
-
-  var txSheet = ss.getSheetByName("Transactions");
-  if (!txSheet || txSheet.getLastRow() <= 1) {
-    return { success: false, error: "Transactions sheet is empty." };
-  }
-
-  var archSheet = ensureSettledArchiveSheet(ss);
-  var data = txSheet.getDataRange().getValues();
-  var now = new Date().toISOString();
-  var finalBatchId = batchId || ("arch-batch-" + Date.now());
-
-  var rowsToArchive = [];
-  var rowIndicesToDelete = [];
-
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    var currentId = String(row[0]).trim();
-    if (txIds.indexOf(currentId) !== -1) {
-      var archId = "arch-" + currentId;
-      var archRow = [
-        archId,
-        currentId,
-        formatDateForSheet(row[1]),
-        String(row[2] || ""),
-        String(row[3] || "expense"),
-        Number(row[4]) || 0,
-        String(row[5] || "Family"),
-        String(row[6] || "upi"),
-        String(row[14] || "acc-sbi"),
-        String(row[15] || "SBI (Main)"),
-        String(row[11] || contactId || ""),
-        String(row[12] || "Family Member"),
-        now,
-        finalBatchId,
-        String(row[9] || "")
-      ];
-      rowsToArchive.push(archRow);
-      rowIndicesToDelete.push(i + 1); // 1-based index
-    }
-  }
-
-  if (rowsToArchive.length === 0) {
-    return { success: false, error: "None of the specified transactions were found in active Transactions." };
-  }
-
-  // 2. Write rows to Settled_Archive
-  archSheet.getRange(archSheet.getLastRow() + 1, 1, rowsToArchive.length, rowsToArchive[0].length).setValues(rowsToArchive);
-
-  // 3. Read-after-write verification on Settled_Archive
-  SpreadsheetApp.flush();
-  var verifyData = archSheet.getDataRange().getValues();
-  var writtenCount = 0;
-  for (var v = 1; v < verifyData.length; v++) {
-    if (String(verifyData[v][13]).trim() === finalBatchId) {
-      writtenCount++;
-    }
-  }
-  if (writtenCount < rowsToArchive.length) {
-    throw new Error("Read-after-write verification failed for Settled_Archive. Archive rolled back.");
-  }
-
-  // 4. Remove active rows from Transactions in descending order (to maintain row indices)
-  rowIndicesToDelete.sort(function(a, b) { return b - a; });
-  for (var d = 0; d < rowIndicesToDelete.length; d++) {
-    txSheet.deleteRow(rowIndicesToDelete[d]);
-  }
-
-  logAuditEvent(ss, "ARCHIVE", "archive", finalBatchId, "Archived " + rowsToArchive.length + " items for contact " + contactId, "SUCCESS");
-
-  return {
-    success: true,
-    batchId: finalBatchId,
-    archivedCount: rowsToArchive.length,
-    message: "Atomically archived " + rowsToArchive.length + " settled items to Settled_Archive."
-  };
-}
-
-function restoreArchivedTransactions(ss, batchId) {
-  if (!batchId) {
-    return { success: false, error: "Batch ID required for restore." };
-  }
-
-  var archSheet = ss.getSheetByName("Settled_Archive");
-  if (!archSheet || archSheet.getLastRow() <= 1) {
-    return { success: false, error: "Settled_Archive is empty." };
-  }
-
-  var txSheet = ensureTransactionsSheet(ss);
-  var archData = archSheet.getDataRange().getValues();
-  var rowsToRestore = [];
-  var rowsToDeleteFromArch = [];
-
-  for (var i = 1; i < archData.length; i++) {
-    var row = archData[i];
-    if (String(row[13]).trim() === String(batchId).trim()) {
-      var origTxId = String(row[1] || row[0]);
-      var isAppa = String(row[10]) === "family-appa";
-      var restoredRow = [
-        origTxId,
-        formatDateForSheet(row[2]),
-        String(row[3] || ""),
-        String(row[4] || "expense"),
-        Number(row[5]) || 0,
-        String(row[6] || "Family"),
-        String(row[7] || "upi"),
-        isAppa ? "YES" : "NO",
-        "YES",
-        String(row[14] || ""),
-        row[12] ? String(row[12]) : new Date().toISOString(),
-        String(row[10] || ""),
-        String(row[11] || ""),
-        "settled",
-        String(row[8] || "acc-sbi"),
-        String(row[9] || "SBI (Main)")
-      ];
-      rowsToRestore.push(restoredRow);
-      rowsToDeleteFromArch.push(i + 1);
-    }
-  }
-
-  if (rowsToRestore.length === 0) {
-    return { success: false, error: "No archived items found matching batch ID: " + batchId };
-  }
-
-  // Append back to Transactions
-  txSheet.getRange(txSheet.getLastRow() + 1, 1, rowsToRestore.length, rowsToRestore[0].length).setValues(rowsToRestore);
-  SpreadsheetApp.flush();
-
-  // Delete from Settled_Archive in reverse
-  rowsToDeleteFromArch.sort(function(a, b) { return b - a; });
-  for (var r = 0; r < rowsToDeleteFromArch.length; r++) {
-    archSheet.deleteRow(rowsToDeleteFromArch[r]);
-  }
-
-  logAuditEvent(ss, "RESTORE", "archive", batchId, "Restored " + rowsToRestore.length + " items to active Transactions", "SUCCESS");
-
-  return {
-    success: true,
-    batchId: batchId,
-    restoredCount: rowsToRestore.length,
-    message: "Restored " + rowsToRestore.length + " transactions from archive."
-  };
-}
-
 function saveReconciliationAdjustment(ss, rec) {
-  if (!rec || !rec.accountId || typeof rec.adjustmentAmount !== "number") {
-    return { success: false, error: "Invalid reconciliation payload: accountId and adjustmentAmount are required." };
-  }
-
+  if (!rec || !rec.accountId) return errorResponse("Account ID is required", 400);
   var sheet = ensureReconciliationsSheet(ss);
-  var recId = rec.id || ("rec-" + Date.now());
-  var now = new Date().toISOString();
-  var dateStr = formatDateForSheet(rec.date || now.split("T")[0]);
+  var recId = "rec-" + new Date().getTime();
+  var nowIso = new Date().toISOString();
 
   var row = [
     recId,
-    dateStr,
-    String(rec.accountId),
-    String(rec.accountName || "Account"),
-    Number(rec.realBalance) || 0,
+    rec.reconciledAt || nowIso,
+    sanitizeCellInput(rec.accountId),
+    sanitizeCellInput(rec.accountName || ""),
+    Number(rec.passbookBalance) || 0,
     Number(rec.computedBalance) || 0,
     Number(rec.adjustmentAmount) || 0,
-    String(rec.notes || "Balance reconciliation adjustment"),
-    now
+    sanitizeCellInput(rec.notes || ""),
+    nowIso
   ];
-
   sheet.appendRow(row);
-  logAuditEvent(ss, "RECONCILE", "account", rec.accountId, "Recorded adjustment ₹" + rec.adjustmentAmount + " on " + rec.accountName, "SUCCESS");
-
-  return {
-    success: true,
-    reconciliationId: recId,
-    message: "Reconciliation adjustment recorded successfully."
-  };
+  logAuditEvent(ss, "RECONCILE", "account", rec.accountId, "Recorded reconciliation adjustment of ₹" + rec.adjustmentAmount, "SUCCESS");
+  return successResponse("Reconciliation adjustment saved", { reconciliationId: recId });
 }
 
 function runDataHealthCheck(ss) {
-  if (!ss) ss = getTargetSpreadsheet();
+  var txs = readTransactionsFromSheet(ss);
+  var accounts = readAccountsFromSheet(ss);
+  var transfers = readTransfersFromSheet(ss);
+
   var issues = [];
+  var accountMap = {};
+  accounts.forEach(function(a) { accountMap[a.id] = a; });
 
-  var txSheet = ss.getSheetByName("Transactions");
-  if (txSheet && txSheet.getLastRow() > 1) {
-    var txData = txSheet.getDataRange().getValues();
-    var seenIds = {};
-
-    for (var i = 1; i < txData.length; i++) {
-      var row = txData[i];
-      var txId = String(row[0] || "").trim();
-
-      // Check duplicate or missing ID
-      if (!txId) {
-        issues.push({
-          id: "issue-missing-id-" + (i + 1),
-          severity: "error",
-          category: "invalid_field",
-          title: "Missing Transaction ID",
-          description: "Row " + (i + 1) + " has an empty transaction ID.",
-          proposedFix: "Assign a unique tx- UUID."
-        });
-      } else if (seenIds[txId]) {
-        issues.push({
-          id: "issue-dup-" + txId,
-          severity: "error",
-          category: "duplicate_id",
-          title: "Duplicate Transaction ID",
-          description: "Transaction ID " + txId + " appears multiple times in Transactions.",
-          recordId: txId,
-          proposedFix: "Regenerate unique ID for duplicate row."
-        });
-      } else {
-        seenIds[txId] = true;
-      }
-
-      // Check positive amount
-      var amt = Number(row[4]);
-      if (isNaN(amt) || amt <= 0) {
-        issues.push({
-          id: "issue-amt-" + txId,
-          severity: "error",
-          category: "invalid_field",
-          title: "Invalid Amount",
-          description: "Transaction " + txId + " has non-positive amount: " + row[4],
-          recordId: txId
-        });
-      }
-
-      // Check unassigned account
-      var accId = String(row[14] || "").trim();
-      if (!accId || accId === "unassigned") {
-        issues.push({
-          id: "issue-acc-" + txId,
-          severity: "warning",
-          category: "orphan",
-          title: "Unassigned Account",
-          description: "Transaction " + txId + " (" + row[2] + ") has no assigned bank/cash account.",
-          recordId: txId,
-          proposedFix: "Assign to SBI or Cash based on payment method."
-        });
-      }
+  txs.forEach(function(t) {
+    if (t.accountId && !accountMap[t.accountId]) {
+      issues.push({
+        type: "MISSING_ACCOUNT",
+        severity: "WARNING",
+        entityId: t.id,
+        message: "Transaction references non-existent account: " + t.accountId
+      });
     }
+  });
+
+  return successResponse("Health check completed", {
+    isHealthy: issues.length === 0,
+    issuesCount: issues.length,
+    issues: issues,
+    stats: {
+      transactionsCount: txs.length,
+      accountsCount: accounts.length,
+      transfersCount: transfers.length
+    }
+  });
+}
+
+
+// ==============================================================================
+// MODULE: Code.gs
+// ==============================================================================
+
+/**
+ * MSR Penny — Google Apps Script Web App Main Entry Point
+ * File: Code.gs
+ * Version: 3.1.0
+ */
+
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('🪙 MSR Penny')
+    .addItem('⚡ Setup / Verify All Sheets', 'setupInitialSheets')
+    .addItem('🏦 Setup Accounts & Transfers', 'ensureAccountsSheet')
+    .addItem('🔄 Recalculate Family Balances', 'calculateFamilyBalancesFromSheet')
+    .addSeparator()
+    .addItem('🧪 Seed Sample Demo Data', 'seedSampleData')
+    .addItem('🧹 Clear Demo Data (Keep Headers)', 'clearAllDataKeepHeaders')
+    .addToUi();
+}
+
+function setupInitialSheets() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureTransactionsSheet(ss);
+  ensureAccountsSheet(ss);
+  ensureTransfersSheet(ss);
+  ensureFamilyContactsSheet(ss);
+  ensureSettledArchiveSheet(ss);
+  ensureReconciliationsSheet(ss);
+  ensureAuditLogSheet(ss);
+  SpreadsheetApp.getUi().alert("✅ All MSR Penny sheets created and verified with emerald branding!");
+}
+
+/**
+ * Handles HTTP GET requests.
+ */
+function doGet(e) {
+  var lock = null;
+  try {
+    lock = acquireScriptLock(CONFIG.LOCK_TIMEOUT_READ_MS);
+  } catch (err) {
+    return errorResponse("Database busy, please retry in a moment.", 503);
   }
 
-  return {
-    timestamp: new Date().toISOString(),
-    totalIssuesCount: issues.length,
-    errorsCount: issues.filter(function(x) { return x.severity === "error"; }).length,
-    warningsCount: issues.filter(function(x) { return x.severity === "warning"; }).length,
-    issues: issues,
-    isHealthy: issues.length === 0
-  };
+  try {
+    var ss = getTargetSpreadsheet(e ? e.parameter : null);
+    var action = (e && e.parameter && e.parameter.action) ? String(e.parameter.action).toLowerCase() : "get_all_data";
+
+    if (action === "health" || action === "ping") {
+      return runDataHealthCheck(ss);
+    }
+
+    if (action === "get_all_data" || action === "state") {
+      ensureTransactionsSheet(ss);
+      ensureFamilyContactsSheet(ss);
+      ensureAccountsSheet(ss);
+      ensureTransfersSheet(ss);
+
+      var txs = readTransactionsFromSheet(ss);
+      var contacts = readFamilyContactsFromSheet(ss);
+      var balanceInfo = calculateFamilyBalancesFromSheet(ss);
+      var freelanceJobs = readFreelanceProjectsFromSheet(ss);
+      var accounts = readAccountsFromSheet(ss);
+      var transfers = readTransfersFromSheet(ss);
+      var settledArchive = readSettledArchiveFromSheet(ss);
+      var reconciliations = readReconciliationsFromSheet(ss);
+
+      return successResponse("Data retrieved successfully", {
+        transactions: txs,
+        familyContacts: contacts,
+        familyBalances: balanceInfo.balances,
+        freelanceJobs: freelanceJobs,
+        accounts: accounts,
+        transfers: transfers,
+        settledArchive: settledArchive,
+        reconciliations: reconciliations
+      });
+    }
+
+    if (action === "accounts") {
+      return successResponse("Accounts retrieved", { accounts: readAccountsFromSheet(ss) });
+    }
+
+    if (action === "contacts") {
+      return successResponse("Contacts retrieved", { contacts: readFamilyContactsFromSheet(ss) });
+    }
+
+    if (action === "transfers") {
+      return successResponse("Transfers retrieved", { transfers: readTransfersFromSheet(ss) });
+    }
+
+    return errorResponse("Unknown GET action: " + action, 404);
+  } catch (err) {
+    return errorResponse("Server error: " + err.toString(), 500);
+  } finally {
+    releaseScriptLock(lock);
+  }
 }
+
+/**
+ * Handles HTTP POST requests.
+ */
+function doPost(e) {
+  var lock = null;
+  try {
+    lock = acquireScriptLock(CONFIG.LOCK_TIMEOUT_WRITE_MS);
+  } catch (err) {
+    return errorResponse("Concurrent write in progress, please retry.", 503);
+  }
+
+  try {
+    var payload;
+    try {
+      payload = JSON.parse(e.postData.contents);
+    } catch (parseErr) {
+      return errorResponse("Malformed JSON request body: " + parseErr.toString(), 400);
+    }
+
+    var ss = getTargetSpreadsheet(payload);
+    var action = payload.action || "sync_all";
+
+    if (action === "add_transaction") {
+      return saveSingleTransaction(ss, payload.transaction);
+    }
+    if (action === "delete_transaction") {
+      return deleteSingleTransaction(ss, payload.id || payload.transactionId);
+    }
+    if (action === "update_accounts") {
+      return saveAccountsWithAuditAndBackup(ss, payload.accounts);
+    }
+    if (action === "save_transfer") {
+      return saveSingleTransfer(ss, payload.transfer);
+    }
+    if (action === "delete_transfer") {
+      return deleteSingleTransfer(ss, payload.id || payload.transferId);
+    }
+    if (action === "archive_settled") {
+      return archiveSettledTransactions(ss, payload.batchId, payload.contactId, payload.txIds);
+    }
+    if (action === "restore_archive") {
+      return restoreArchivedTransactions(ss, payload.batchId);
+    }
+    if (action === "reconcile_balance") {
+      return saveReconciliationAdjustment(ss, payload.reconciliation);
+    }
+    if (action === "sync_all") {
+      if (payload.transactions && Array.isArray(payload.transactions)) {
+        payload.transactions.forEach(function(tx) {
+          saveSingleTransaction(ss, tx);
+        });
+      }
+      if (payload.accounts && Array.isArray(payload.accounts)) {
+        saveAccountsWithAuditAndBackup(ss, payload.accounts);
+      }
+      if (payload.familyContacts && Array.isArray(payload.familyContacts)) {
+        syncFamilyContactsSheet(ss, payload.familyContacts);
+      }
+      if (payload.freelanceJobs && Array.isArray(payload.freelanceJobs)) {
+        syncFreelanceSheet(ss, payload.freelanceJobs);
+      }
+      return successResponse("Batch sync completed successfully", {
+        syncedAt: new Date().toISOString()
+      });
+    }
+
+    return errorResponse("Unknown POST action: " + action, 404);
+  } catch (err) {
+    return errorResponse("Execution error: " + err.toString(), 500);
+  } finally {
+    releaseScriptLock(lock);
+  }
+}
+
+
+// ==============================================================================
+// MODULE: testData.gs
+// ==============================================================================
+
+/**
+ * MSR Penny — Google Apps Script Demo Data & Test Utilities
+ * File: testData.gs
+ */
+
+function seedSampleData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var txSheet = ensureTransactionsSheet(ss);
+  var contactsSheet = ensureFamilyContactsSheet(ss);
+  var accountsSheet = ensureAccountsSheet(ss);
+
+  var now = new Date();
+  var todayStr = Utilities.formatDate(now, CONFIG.TIMEZONE, "yyyy-MM-dd");
+
+  var demoTxs = [
+    ["tx-demo-1", todayStr, "Metro Rail Smartcard Recharge", 200, "expense", "Travel", "upi", "acc-sbi", "SBI (Main)", "FALSE", "FALSE", "", "", "FALSE", "settled", "", "", "Campus commute recharge", now.toISOString()],
+    ["tx-demo-2", todayStr, "Appa College Semester Bus Pass", 450, "expense", "Travel", "cash", "acc-cash", "Cash", "TRUE", "TRUE", "family-appa", "Appa", "FALSE", "pending", "", "", "Reimbursable student pass", now.toISOString()],
+    ["tx-demo-3", todayStr, "Graphic Design Client Advance", 2500, "income", "Freelance", "upi", "acc-sbi", "SBI (Main)", "FALSE", "FALSE", "", "", "FALSE", "settled", "job-demo-1", "Advance 50%", "Acme Corp Tech Fest Poster", now.toISOString()],
+    ["tx-demo-4", todayStr, "College Canteen Lunch", 80, "expense", "Food", "upi", "acc-iob", "IOB (Second)", "FALSE", "FALSE", "", "", "FALSE", "settled", "", "", "Campus meals", now.toISOString()],
+    ["tx-demo-5", todayStr, "UPI Repayment from Appa", 450, "repayment", "Family", "upi", "acc-sbi", "SBI (Main)", "FALSE", "FALSE", "family-appa", "Appa", "TRUE", "settled", "", "", "Settlement for semester bus pass", now.toISOString()]
+  ];
+
+  demoTxs.forEach(function(r) {
+    txSheet.appendRow(r);
+  });
+
+  SpreadsheetApp.getUi().alert("✅ Sample demo data populated successfully! 5 realistic demo records created.");
+}
+
+function clearAllDataKeepHeaders() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetNames = [CONFIG.SHEETS.TRANSACTIONS, CONFIG.SHEETS.TRANSFERS, CONFIG.SHEETS.SETTLED_ARCHIVE, CONFIG.SHEETS.RECONCILIATIONS];
+
+  sheetNames.forEach(function(name) {
+    var sheet = ss.getSheetByName(name);
+    if (sheet && sheet.getLastRow() > 1) {
+      sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+    }
+  });
+
+  SpreadsheetApp.getUi().alert("🧹 All transactional data cleared! Headers and accounts remain intact.");
+}
+
+

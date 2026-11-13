@@ -5,26 +5,26 @@
 
 import React, { useState, useEffect } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
-import { Header } from './components/Header';
-import { BottomNav, NavTab } from './components/BottomNav';
-import { HomeScreen } from './components/HomeScreen';
-import { AppaSettlementScreen } from './components/AppaSettlementScreen';
-import { AddTransactionModal } from './components/AddTransactionModal';
-import { FreelanceScreen } from './components/FreelanceScreen';
-import { SavingsScreen } from './components/SavingsScreen';
-import { HistoryScreen } from './components/HistoryScreen';
-import { ReportsScreen } from './components/ReportsScreen';
-import { TransactionDetailModal } from './components/TransactionDetailModal';
-import { SyncModal } from './components/SyncModal';
-import { ProfileModal } from './components/ProfileModal';
-import { AccountTransferModal } from './components/AccountTransferModal';
-import { AccountSettingsModal } from './components/AccountSettingsModal';
-import { PinLockModal } from './components/PinLockModal';
-import { PinSetupModal } from './components/PinSetupModal';
-import { DataHealthModal } from './components/DataHealthModal';
-import { BalanceReconciliationModal } from './components/BalanceReconciliationModal';
-import { PWAInstallBanner } from './components/PWAInstallBanner';
-import { AppaNotificationModal } from './components/AppaNotificationModal';
+import { Header, BottomNav, NavTab, PWAInstallBanner } from './components/common';
+import {
+  HomeScreen,
+  AppaSettlementScreen,
+  AddTransactionModal,
+  FreelanceScreen,
+  SavingsScreen,
+  HistoryScreen,
+  ReportsScreen,
+  TransactionDetailModal,
+  SyncModal,
+  ProfileModal,
+  AccountTransferModal,
+  AccountSettingsModal,
+  PinLockModal,
+  PinSetupModal,
+  DataHealthModal,
+  BalanceReconciliationModal,
+  AppaNotificationModal,
+} from './features';
 import { Transaction, TransactionType, AppaNotificationData } from './types';
 
 type SubView = 'none' | 'appa' | 'savings';

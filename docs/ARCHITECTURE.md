@@ -80,15 +80,44 @@
 - **Icons:** Google Material Symbols Outlined & Lucide Icons
 - **PWA Engine:** `vite-plugin-pwa` with auto-updating Workbox service worker
 
-### 3.2 State Management (`src/context/AppContext.tsx`)
-The client leverages React Context API with optimistic UI updates:
-1. **Initial Mount:** Hydrates immediately from `localStorage` cache for instant sub-second render.
-2. **Background Reconciliation:** Dispatches a non-blocking fetch to `/api/state` or directly to Google Apps Script. Confirmed remote records reconcile atomically without discarding pending offline creations.
-3. **Mutation Pipeline:**
-   - Client generates UUID (`tx-timestamp-random`).
-   - Pure calculation engine recomputes projected account balances.
-   - Overdraw / deficit warnings trigger if an account or cash would drop below zero.
-   - Mutation commits to local state and asynchronous queue dispatches to the server.
+### 3.2 Modular Frontend Hierarchy (`src/`)
+The frontend is structured into domain-driven feature modules and clean service layers:
+
+```
+src/
+├── app/                       # Application Shell & Provider Adapters
+│   ├── App.tsx
+│   └── providers/
+│       └── AppProvider.tsx
+│
+├── components/                # Re-usable Shared UI & Common Shell
+│   ├── common/
+│   │   ├── Header.tsx         # Responsive sticky header & sync trigger
+│   │   ├── BottomNav.tsx      # Tab-bar navigation
+│   │   └── PWAInstallBanner.tsx
+│   └── index.ts               # Backwards-compatible barrel export
+│
+├── features/                  # Domain-Driven Feature Slices
+│   ├── dashboard/             # Executive financial summary & balance cards
+│   ├── transactions/          # Add/Edit/Delete, search, filtering & history
+│   ├── settlements/           # Multi-contact family ledger & WhatsApp links
+│   ├── freelance/             # Client projects, milestones & billing
+│   ├── reports/               # Monthly net metrics & data health diagnostic
+│   └── settings/              # Opening balances, PIN lock & reconciliation
+│
+├── services/                  # Clean Separation of Concerns
+│   ├── api/                   # Dedicated HTTP & Google Apps Script clients
+│   │   ├── apiClient.ts       # Centralized timeout & error handler
+│   │   ├── transactionService.ts
+│   │   ├── settlementService.ts
+│   │   ├── accountService.ts
+│   │   └── syncService.ts
+│   └── storage/
+│       └── localStorageService.ts # Typed local state & offline cache
+│
+├── types.ts                   # Core domain contracts and schemas
+└── utils/                     # Pure mathematical calculators
+```
 
 ### 3.3 Pure Mathematical Ledger (`src/utils/`)
 - `balanceCalculator.ts`:
